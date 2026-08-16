@@ -626,8 +626,7 @@ PostgresStore
 
 ## 本章文件
 
-- `code.py`：当前主版本。
-- `code_commented.py`：详细注释版，解释 Markdown 存储、检索、临时注入、提取和合并。
+- `code.py`：带注释教学版（可直接运行）。
 - `code_uncommented.py`：逻辑相同、去掉教学注释的精简版。
 - `images/`：本章的记忆架构和子系统示意图。
 
@@ -828,4 +827,3 @@ sessionMemoryCompact（s08 中提到的机制）正是使用了 Session Memory�
 
 </details>
 
-<!-- translation-sync: zh@v1, en@v1, ja@v1 -->

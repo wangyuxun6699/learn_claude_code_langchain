@@ -1,4 +1,8 @@
 # Learn Claude Code — LangChain Agent Harness 版
+
+> **命名说明**：仓库目录名与 `.env.example` 里的 `langchain4j` 是历史遗留（`LangChain4j` 是 Java 库，与本项目无关）。
+> 本项目是**纯 Python** 实现（LangChain 1.x + LangGraph + OpenAI-compatible ChatModel），仓库内没有任何 Java 文件。
+
 框架选对了，代码量最多可以少一半。这个仓库代码就是基于最热门的agent框架[langchain](https://github.com/langchain-ai/langchain)和[langgraph](https://github.com/langchain-ai/langgraph)来深度拆解最热门的agent产品ClaudeCode
 本项目参考 [shareAI-lab/learn-claude-code](https://github.com/shareAI-lab/learn-claude-code) 的 20 章编排，用 **LangChain 1.x + LangGraph + OpenAI-compatible ChatModel** 重新实现同一组 Agent Harness 概念。
 
@@ -241,14 +245,6 @@ Claude Code = 一个 agent loop
 
 
 
-### Web 平台
-
-当前 Web 平台仍读取 `docs/` 中的旧 12 章内容。新版 20 章请直接阅读根目录 `s01-s20`。
-
-```sh
-cd web && npm install && npm run dev   # http://localhost:3000
-```
-
 ## 学习路径
 
 主线：能动手 → 能做复杂任务 → 能记住和恢复 → 能长期运行 → 能协作 → 能扩展并合体
@@ -401,26 +397,40 @@ BASE_URL=https://your-openai-compatible-endpoint/v1
 ```text
 learn_claude_code/
 ├── s01_agent_loop/
+│   ├── code.py              # 带注释教学版（可直接运行）
+│   ├── code_uncommented.py  # 无注释速读版
+│   ├── images/
+│   └── README.md
+├── s03_permission/
 │   ├── code.py
-│   ├── code_commented.py
+│   ├── code_middleware.py   # s03.5 中间件版（归档）
+│   ├── code_uncommented.py
+│   ├── images/
+│   └── README.md
+├── s05_todo_write/
+│   ├── code.py
+│   ├── code_streaming.py    # s05.5 流式版（归档）
 │   ├── code_uncommented.py
 │   ├── images/
 │   └── README.md
 ├── ...
 ├── s11_error_recovery/ ... s14_cron_scheduler/
 │   ├── code.py
-│   ├── code_commented.py
 │   ├── code_uncommented.py
 │   └── README.md
-├── s15_agent_teams/ ... s20_comprehensive/
-│   ├── code.py              # 空占位
+├── s15_agent_teams/
+│   ├── code.py
+│   ├── code_uncommented.py
+│   └── README.md
+├── s16_team_protocols/ ... s20_comprehensive/
+│   ├── code.py              # 空占位（未实现）
 │   └── README.md            # 状态说明
 ├── skills/                  # s07 可扫描的示例 Skills
 ├── .env.example
 └── requirements.txt
 ```
 
-已实现章节中的 `code.py` 是主版本；`code_commented.py` 与 `code_uncommented.py` 分别适合逐行学习和快速通读。原来的 s03.5、s05.5 已分别归档为 `code_middleware.py` 与 `code_streaming.py`。
+已实现章节统一为两份文件：`code.py` 是带注释的教学版（`python -m sXX.code` 直接运行），`code_uncommented.py` 是去掉教学注释的速读版。原来的 s03.5、s05.5 已分别归档为 `code_middleware.py` 与 `code_streaming.py`。
 
 ## 说明与致谢
 

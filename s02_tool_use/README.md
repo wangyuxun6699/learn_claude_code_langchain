@@ -43,7 +43,7 @@ agent = create_agent(model=MODEL, tools=TOOLS, system_prompt=SYSTEM)
 
 ## 本章文件
 
-`code.py` 为当前主版本，并保留 `code_commented.py`、`code_uncommented.py` 两个学习版本。
+`code.py` 是带注释的教学主版本（可直接运行）；`code_uncommented.py` 是去掉教学注释的精简版。
 
 ---
 
@@ -132,4 +132,3 @@ CC 的 `StreamingToolExecutor`（`StreamingToolExecutor.ts`）让工具在模型
 
 </details>
 
-<!-- translation-sync: zh@v1, en@v0, ja@v0 -->

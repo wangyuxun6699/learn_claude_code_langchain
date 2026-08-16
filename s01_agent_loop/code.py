@@ -18,6 +18,7 @@ except ImportError:
 
 # subprocess 用来执行 shell 命令，后面会封装成 bash 工具给智能体调用。
 import subprocess
+from pathlib import Path
 
 # load_dotenv 用来从 .env 文件加载模型、key、base_url 等配置。
 from dotenv import load_dotenv
@@ -33,7 +34,7 @@ from langchain_openai import ChatOpenAI
 
 # HumanMessage 表示用户消息，ToolMessage 表示工具返回，AIMessage 表示模型回复。
 # SystemMessage 当前只在旧写法注释中保留，用来说明之前的 system prompt 传法。
-from langchain_core.messages import HumanMessage,SystemMessage,ToolMessage,AIMessage
+from langchain_core.messages import HumanMessage,ToolMessage,AIMessage
 
 # StructuredTool 可以把普通 Python 函数包装成模型可调用的工具。
 from langchain_core.tools import StructuredTool
@@ -55,14 +56,15 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 OPENAI_BASE_URL = os.getenv("BASE_URL")
 
 # 记录程序启动时所在的工作目录，后续 bash 工具都在这个目录里执行命令。
-path = os.getcwd()
+WORKDIR = Path.cwd()
 
 # system prompt 用来告诉模型它是一个代码智能体，以及应该在哪个目录里工作。
-SYSTEM = f"you are a coding agent at {path}. Use bash to solve tasks. Act dont explain"
+SYSTEM = f"you are a coding agent at {WORKDIR}. Use bash to solve tasks. Act dont explain"
 
 # 把执行 shell 命令的能力封装成普通函数，后面会注册成智能体工具。
+# 安全边界：shell=True 仅为教学演示，黑名单/路径检查不等于安全边界；生产请使用权限中间件 + 沙箱。
 def run_bash(command:str)->str:
-    """执行 shell 命令，并返回命令输出。"""
+    """Execute a shell command in the current workspace."""
     # 简单拦截一些明显危险的命令，避免模型误删系统文件或关机。
     dangerous = ["rm -rf /","sudo","shutdown","reboot",">/dev/"]
 
@@ -72,11 +74,11 @@ def run_bash(command:str)->str:
 
     try:
         # 执行模型传入的 shell 命令。
-        # shell=True 允许执行字符串命令；cwd=path 限定命令运行目录。
+        # shell=True 允许执行字符串命令；cwd=WORKDIR 限定命令运行目录。
         r = subprocess.run(
             command,
             shell=True,
-            cwd=path,
+            cwd=WORKDIR,
             capture_output=True,
             text=True,
             timeout=120,
@@ -90,7 +92,7 @@ def run_bash(command:str)->str:
     except subprocess.TimeoutExpired:
         # 如果命令执行超过 120 秒，就返回超时提示。
         return "Error: Timeout(120s)"
-    except (FileExistsError, OSError) as e:
+    except OSError as e:
         # 捕获常见系统级异常，并把错误信息返回给模型。
         return f"Error: {e}"
 
@@ -114,7 +116,7 @@ def build_chat_model():
     # ChatOpenAI 的基础参数：模型名、最大输出 token 数和温度。
     kwargs = {
         "model":MODEL,
-        "max_tokens":8000,
+        "max_completion_tokens":8000,
         "temperature":0,
     }
 

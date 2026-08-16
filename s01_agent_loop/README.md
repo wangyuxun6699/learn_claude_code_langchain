@@ -47,7 +47,7 @@ result = agent.invoke({"messages": [{"role": "user", "content": query}]})
 
 ## 本章文件
 
-`code.py` 为当前主版本；`code_commented.py` 是详细注释版；`code_uncommented.py` 是便于通读的精简版。
+`code.py` 是带注释的教学主版本（可直接运行）；`code_uncommented.py` 是去掉教学注释的精简版，便于通读。
 
 ---
 
@@ -132,4 +132,3 @@ CC 的 `StreamingToolExecutor`（`query.ts:561`）让工具在模型还在生成
 
 </details>
 
-<!-- translation-sync: zh@v1, en@v0, ja@v0 -->

@@ -49,8 +49,7 @@ system prompt 中只注入 `name: description` 目录；完整 `SKILL.md` 只有
 
 ## 本章文件
 
-- `code.py`：当前主版本；仓库根目录的 `skills/` 是可直接扫描的示例。
-- `code_commented.py`：详细注释版，逐步解释 YAML frontmatter、技能目录、按需加载及与子 Agent 的组合。
+- `code.py`：带注释教学版（可直接运行）；仓库根目录的 `skills/` 是可直接扫描的示例。
 - `code_uncommented.py`：无教学注释的精简版。
 
 ---
@@ -115,4 +114,3 @@ CC 的 SKILL.md YAML frontmatter 由 `parseSkillFrontmatterFields()` 解析（`l
 
 </details>
 
-<!-- translation-sync: zh@v2, en@v2, ja@v2 -->

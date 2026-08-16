@@ -122,7 +122,7 @@ def _scan_skills() -> None:
             "root": skill_root,
         }
 
-def list_skils() ->str:
+def list_skills() ->str:
 
     if not SKILL_REGISTRY:
         return "- (no skills found)"
@@ -135,7 +135,7 @@ def list_skils() ->str:
 
 _scan_skills()
 
-SKILL_CATALOG = list_skils()
+SKILL_CATALOG = list_skills()
 
 MODEL_ID = os.getenv("MODEL_ID")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
@@ -172,13 +172,13 @@ HOOKS: dict[str, list[Callable[..., Any]]] = {
     "Stop": [],
 }
 
-def register_hook(event: str,callable:Callable[..., Any]) -> None:
+def register_hook(event: str,callback: Callable[..., Any]) -> None:
 
 
     if event not in HOOKS:
-        raise ValueError(f"unkown hook event:{event}")
+        raise ValueError(f"unknown hook event:{event}")
 
-    HOOKS[event].append(callable)
+    HOOKS[event].append(callback)
 
 
 def trigger_hook(event:str, *args: Any)-> Any|None:
@@ -273,9 +273,8 @@ DANGEROUS_COMMANDS = [
     "> /dev/sda",
 ]
 
-POTENTIALLY_DESTRUCITIVE_COMMAND = [
+POTENTIALLY_DESTRUCTIVE_COMMANDS = [
     "rm ",
-    "del ",
     "> /etc/",
     "chmod 777",
 ]
@@ -300,7 +299,7 @@ def check_deny_list(command:str) ->str | None:
 
     return None
 
-def ask_users(tool_name:str, args:dict[str, Any],reason: str) ->bool:
+def ask_user(tool_name:str, args:dict[str, Any],reason: str) ->bool:
 
     scope = AGENT_SCOPE.get()
 
@@ -324,7 +323,9 @@ def  check_rules(
         command = str(args.get("command", ""))
         normalized = command.lower()
 
-        for pattern in POTENTIALLY_DESTRUCITIVE_COMMAND:
+        if normalized.strip().startswith("del "):
+            return "Potentially destructive shell command: del "
+        for pattern in POTENTIALLY_DESTRUCTIVE_COMMANDS:
             if pattern.lower() in normalized:
                 return(
                     "Potentially destructive shell command: "
@@ -366,7 +367,7 @@ def check_permission(
     )
 
     if confirmation_reason:
-        return ask_users(
+        return ask_user(
             tool_name,
             args,
             confirmation_reason,
@@ -468,6 +469,7 @@ def load_skill(name: str) -> str:
     )
 
 @tool
+# 安全边界：shell=True 仅为教学演示，黑名单/路径检查不等于安全边界；生产请使用权限中间件 + 沙箱。
 def run_bash(command: str) -> str:
     """Execute a shell command in the current workspace."""
 
@@ -764,7 +766,7 @@ def task(description: str) -> str:
                     }
                 ]
             },
-            config={"recursion_limit": 64},
+            config={"recursion_limit": 128},
         )
 
         summary = extract_final_text(
@@ -1013,7 +1015,7 @@ def agent_loop(
 
 def main() -> None:
     print("s07: Skill Loading — catalog in SYSTEM, content on demand")
-    print("Type a question, press Enter. Type q to quit.\n")
+    print("输入问题，回车发送。输入 q 退出。\n")
 
 
     session_state: dict[str, Any] = {

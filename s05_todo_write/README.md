@@ -62,7 +62,7 @@ global rounds_since_todo
 
 ## 本章文件
 
-`code.py` 是 invoke 版；`code_streaming.py` 是流式版；两者均保留 commented/uncommented 变体。
+`code.py` 是带注释的 invoke 版；`code_streaming.py` 是 s05.5 流式归档版；`code_uncommented.py` 是 invoke 版去掉教学注释的精简版。
 
 ---
 
@@ -109,4 +109,3 @@ Task System 相比 TodoWrite 的核心增量：
 
 </details>
 
-<!-- translation-sync: zh@v1, en@v1, ja@v1 -->

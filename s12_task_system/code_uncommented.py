@@ -322,6 +322,7 @@ def safe_path(raw_path: str) -> Path:
 
 
 @tool("bash")
+# 安全边界：shell=True 仅为教学演示，黑名单/路径检查不等于安全边界；生产请使用权限中间件 + 沙箱。
 def run_bash(command: str) -> str:
     """在工作区运行 shell 命令，并返回标准输出与标准错误。"""
     try:
@@ -467,7 +468,7 @@ model = ChatOpenAI(
     api_key=OPENAI_API_KEY,
     base_url=BASE_URL,
     temperature=0,
-    max_tokens=MAX_OUTPUT_TOKENS,
+    max_completion_tokens=MAX_OUTPUT_TOKENS,
     max_retries=2,
     timeout=120,
 )

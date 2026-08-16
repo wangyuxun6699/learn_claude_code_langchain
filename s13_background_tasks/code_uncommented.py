@@ -786,6 +786,7 @@ def safe_path(raw_path: str) -> Path:
 
 
 @tool("bash")
+# 安全边界：shell=True 仅为教学演示，黑名单/路径检查不等于安全边界；生产请使用权限中间件 + 沙箱。
 def run_bash(
     command: str,
     run_in_background: bool | None = None,
@@ -1070,7 +1071,7 @@ model = ChatOpenAI(
     api_key=OPENAI_API_KEY,
     base_url=BASE_URL,
     temperature=0,
-    max_tokens=MAX_OUTPUT_TOKENS,
+    max_completion_tokens=MAX_OUTPUT_TOKENS,
     max_retries=2,
     timeout=120,
 )
@@ -1194,8 +1195,8 @@ def main() -> None:
     """启动 s13 命令行 Agent。"""
     print("s13: background tasks")
     print(
-        "Enter a question, press Enter to send. "
-        "Type q to quit.\n"
+        "输入问题后按回车发送；"
+        "输入 q 退出。\n"
     )
 
     session_state: dict[str, Any] = {

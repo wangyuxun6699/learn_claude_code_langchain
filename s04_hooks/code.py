@@ -53,7 +53,6 @@ from langchain_core.tools import tool
 import os, subprocess
 
 # 这里重复导入了一次 Path，不影响运行；为了尽量不改原代码逻辑，先保留。
-from pathlib import Path
 
 # AIMessage 是模型回复消息的类型，print_assistant_message 会用它做类型标注。
 from langchain_core.messages import AIMessage
@@ -188,8 +187,6 @@ def stop_hook(state: AgentState, runtime: Runtime) -> dict[str, Any] | None:
 # WORKDIR 表示程序启动时所在的工作目录，后面会用它限制文件读写范围。
 WORKDIR = Path.cwd()
 
-# path 是字符串形式的当前工作目录，subprocess.run(cwd=path) 会用到。
-path = os.getcwd()
 
 # 从 .env 或系统环境变量中读取模型名称。
 MODEL_ID = os.getenv("MODEL_ID")
@@ -198,7 +195,7 @@ MODEL_ID = os.getenv("MODEL_ID")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 # 系统提示词告诉模型：它是当前目录下的 coding agent，要通过工具解决任务。
-SYSTEM = f"you are a coding agent at {path}. Use tools to solve tasks. Act dont explain"
+SYSTEM = f"you are a coding agent at {WORKDIR}. Use tools to solve tasks. Act dont explain"
 
 # 从环境变量读取兼容 OpenAI 接口的 base_url，例如 DeepSeek 或其他代理服务地址。
 OPENAI_BASE_URL = os.getenv("BASE_URL")
@@ -229,6 +226,13 @@ def check_deny_list(command: str) -> str | None:
     return None
 
 
+def resolve_path(raw_path: str) -> Path:
+    candidate = Path(raw_path)
+    if candidate.is_absolute():
+        return candidate.resolve()
+    return (WORKDIR / candidate).resolve()
+
+
 def check_rules(tool_name: str, args: dict) -> str | None:
     """执行较温和的规则检查。
 
@@ -240,7 +244,7 @@ def check_rules(tool_name: str, args: dict) -> str | None:
         command = args.get("command", "")
 
         # 这些关键词可能会破坏文件或修改系统权限，因此需要用户二次确认。
-        if any(kw in command for kw in ["rm ", "> /etc/", "chmod 777", "del"]):
+        if command.strip().lower().startswith("del ") or any(kw in command for kw in ["rm ", "> /etc/", "chmod 777"]):
             return "potentially destructive command"
 
     # 对文件读写编辑工具做路径限制，避免 Agent 操作工作区之外的文件。
@@ -248,9 +252,9 @@ def check_rules(tool_name: str, args: dict) -> str | None:
         # 从工具参数中取文件路径；没有 path 时用空字符串兜底。
         path = args.get("path", "")
 
-        # (WORKDIR / path).resolve() 会把相对路径转成绝对路径并消解 ..。
+        # resolve_path(path) 会把相对路径转成绝对路径并消解 ..。
         # is_relative_to(WORKDIR) 用来确认最终路径仍然在工作区里面。
-        if not (WORKDIR / path).resolve().is_relative_to(WORKDIR):
+        if not resolve_path(path).is_relative_to(WORKDIR):
             return "Working outside workspace"
 
     # 没有触发任何规则，表示可以继续执行。
@@ -336,19 +340,20 @@ register_hook("Stop", on_stop)
 
 
 @tool
+# 安全边界：shell=True 仅为教学演示，黑名单/路径检查不等于安全边界；生产请使用权限中间件 + 沙箱。
 def run_bash(command: str) -> str:
-    """执行 shell 命令，并返回命令输出。"""
+    """Execute a shell command in the current workspace."""
 
     try:
         # 执行模型传入的 shell 命令。
-        # shell=True 允许执行字符串命令；cwd=path 限定命令运行目录。
+        # shell=True 允许执行字符串命令；cwd=WORKDIR 限定命令运行目录。
         # capture_output=True 会同时捕获 stdout 和 stderr，避免直接刷屏。
         # text=True 表示用字符串形式返回输出，而不是 bytes。
         # timeout=120 限制最长运行 120 秒，避免命令卡死。
         r = subprocess.run(
             command,
             shell=True,
-            cwd=path,
+            cwd=WORKDIR,
             capture_output=True,
             text=True,
             timeout=120,
@@ -364,21 +369,17 @@ def run_bash(command: str) -> str:
     except subprocess.TimeoutExpired:
         # 如果命令执行超过 120 秒，就返回超时提示。
         return "Error: Timeout(120s)"
-    except (FileExistsError, OSError) as e:
+    except OSError as e:
         # 捕获常见系统级异常，并把错误信息返回给模型。
         return f"Error: {e}"
 
 
 @tool
 def run_read(path: str, limit: int | None = None) -> str:
-    """读取文件内容。
-
-    path 是要读取的文件路径。
-    limit 可选，用来限制最多返回多少行。
-    """
+    """Read a UTF-8 text file, optionally limiting the returned line count."""
     try:
         # 读取整个文件并按行拆开，方便后面做行数限制。
-        lines = Path(path).read_text().splitlines()
+        lines = resolve_path(path).read_text().splitlines()
 
         # 如果传入 limit，并且文件行数超过 limit，就只返回前 limit 行。
         if limit and limit < len(lines):
@@ -394,15 +395,11 @@ def run_read(path: str, limit: int | None = None) -> str:
 
 @tool
 def run_write(path: str, content: str) -> str:
-    """写入文件内容。
-
-    path 是目标文件路径。
-    content 是要写入的新内容；该函数会覆盖原文件内容。
-    """
+    """Write UTF-8 content to a file, replacing its existing content."""
 
     try:
         # 把传入路径转换成 Path 对象，后续创建目录和写文件更方便。
-        file_path = Path(path)
+        file_path = resolve_path(path)
 
         # 如果父目录不存在，就自动创建；parents=True 表示多级目录也会一起创建。
         file_path.parent.mkdir(parents=True, exist_ok=True)
@@ -419,16 +416,11 @@ def run_write(path: str, content: str) -> str:
 
 @tool
 def run_edit(path: str, old_text: str, new_text: str) -> str:
-    """替换文件中的第一处旧文本。
-
-    path 是要编辑的文件路径。
-    old_text 是需要被替换的原文。
-    new_text 是替换后的新文本。
-    """
+    """Replace the first exact occurrence of old_text in a UTF-8 file."""
 
     try:
         # 先把文件路径包装成 Path 对象。
-        file_path = Path(path)
+        file_path = resolve_path(path)
 
         # 读取原文件内容。
         text = file_path.read_text()
@@ -449,10 +441,7 @@ def run_edit(path: str, old_text: str, new_text: str) -> str:
 
 @tool
 def run_glob(pattern: str) -> str:
-    """按 glob 模式查找工作区里的文件。
-
-    pattern 可以是 "*.py"、"src/**/*.txt" 这样的匹配表达式。
-    """
+    """Find workspace files matching a glob pattern."""
     # 在函数内部导入 glob，只有调用这个工具时才加载它。
     import glob as g
 
@@ -516,7 +505,7 @@ MODEL = ChatOpenAI(
     # 模型名称来自环境变量 MODEL_ID。
     model=MODEL_ID,
     # 限制模型最多输出 8000 token。
-    max_tokens=8000,
+    max_completion_tokens=8000,
     # temperature=0 表示尽量稳定、确定性输出。
     temperature=0,
     # API key 来自 OPENAI_API_KEY 环境变量。

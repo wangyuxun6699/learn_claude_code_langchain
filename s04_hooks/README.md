@@ -497,9 +497,8 @@ Middleware 不是脱离 LangGraph 的另一套运行时。`create_agent()` 把�
 
 ## 本章文件
 
-- `code.py`：默认版本，包含较完整的中文解释；
+- `code.py`：带注释教学版（可直接运行），包含较完整的中文解释；
 - `code_uncommented.py`：保留必要 docstring 的精简完整版本；
-- `code_commented.py`：详细中文注释版本。
 
 三个入口使用同一套 `HOOKS`、工具和 middleware 装配。
 
@@ -521,7 +520,6 @@ Copy-Item .env.example .env
 ```powershell
 python -m s04_hooks.code
 python -m s04_hooks.code_uncommented
-python -m s04_hooks.code_commented
 ```
 
 建议测试：
@@ -624,4 +622,3 @@ PostToolUse hooks 返回 `preventContinuation: true` 时，会产生一个 `hook
 
 </details>
 
-<!-- translation-sync: zh@v1, en@v0, ja@v0 -->

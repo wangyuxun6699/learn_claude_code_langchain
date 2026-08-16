@@ -323,11 +323,10 @@ team_graph.stream(
 
 ## 本章文件
 
-- `code.py`：默认可运行版本，保留适量结构注释；
+- `code.py`：带注释教学版（可直接运行）；
 - `code_uncommented.py`：去掉教学行注释的完整版本，适合快速通读和自行练习；
-- `code_commented.py`：详细中文注释版，重点解释状态 reducer、handoff 消息配对、子图路由、middleware、checkpoint 和 streaming。
 
-三个文件的运行逻辑一致。
+两个文件的运行逻辑一致。
 
 ## 运行
 
@@ -346,7 +345,6 @@ Copy-Item .env.example .env
 ```powershell
 python -m s15_agent_teams.code
 python -m s15_agent_teams.code_uncommented
-python -m s15_agent_teams.code_commented
 ```
 
 也支持直接运行文件：
@@ -375,7 +373,6 @@ python s15_agent_teams/code.py
 ```powershell
 python -m py_compile s15_agent_teams/code.py
 python -m py_compile s15_agent_teams/code_uncommented.py
-python -m py_compile s15_agent_teams/code_commented.py
 
 python -c "import s15_agent_teams.code as c; print(type(c.team_graph).__name__)"
 ```

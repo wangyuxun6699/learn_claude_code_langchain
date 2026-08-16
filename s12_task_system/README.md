@@ -236,9 +236,8 @@ in_progress ──complete_task──→ completed
 
 ## 本章文件
 
-- `code.py`：默认可运行版本，逻辑与无注释版一致；
+- `code.py`：带注释教学版（可直接运行）；
 - `code_uncommented.py`：保留必要中文文档字符串、不含教学行注释的完整版本；
-- `code_commented.py`：逐步解释任务存储、依赖检查、LangGraph 工具循环和状态边界的详细中文注释版。
 
 ---
 
@@ -266,7 +265,6 @@ BASE_URL=https://your-openai-compatible-endpoint/v1
 ```powershell
 python -m s12_task_system.code
 python -m s12_task_system.code_uncommented
-python -m s12_task_system.code_commented
 ```
 
 可以依次尝试：
@@ -362,4 +360,3 @@ python -m s12_task_system.code_commented
 
 s13 将在任务系统之上增加 Background Tasks：耗时命令不再阻塞 Agent 的模型循环，Agent 可以继续处理其他工作，后台任务完成后再返回结果。
 
-<!-- translation-sync: zh@v1 -->

@@ -166,6 +166,7 @@ def safe_path(raw_path: str)-> Path:
     return path
 
 @tool("bash")
+# 安全边界：shell=True 仅为教学演示，黑名单/路径检查不等于安全边界；生产请使用权限中间件 + 沙箱。
 def run_bash(command:str)-> str:
     """run a shell command in workspace and return its output"""
 
@@ -221,11 +222,6 @@ def run_write(path:str, content:str):
 
 TOOLS = [run_bash,run_read,run_write]
 
-model_kwargs: dict[str, Any] = {
-    "model": MODEL_ID,
-    "max_completion_tokens": 8_000,
-    "temperature": 0
-}
 
 
 MODEL = ChatOpenAI(
@@ -316,8 +312,8 @@ def main() -> None:
     )
 
     print(
-        "Enter a question; "
-        "q/exit/empty input quits.\n"
+        "输入问题；"
+        "q/exit/空输入退出。\n"
     )
 
     session_state: dict[str, Any] = {

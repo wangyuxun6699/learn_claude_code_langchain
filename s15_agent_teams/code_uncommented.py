@@ -182,15 +182,15 @@ def trace_teammate_tool_call(
 def assign_teammate(
     name: Annotated[
         str,
-        "队友的唯一短名称，例如 alice 或 database_dev",
+        "Short unique name of the teammate, e.g. alice or database_dev",
     ],
     role: Annotated[
         str,
-        "队友角色，例如 backend developer",
+        "Role of the teammate, e.g. backend developer",
     ],
     task: Annotated[
         str,
-        "完整任务描述，必须包含路径、限制、预期结果和验证要求",
+        "Complete task description including paths, constraints, expected results and verification requirements",
     ],
     state: Annotated[
         TeamState,
@@ -202,10 +202,10 @@ def assign_teammate(
     ],
 ) -> Command[Literal["teammate"]]:
     """
-    把工作交接给一个队友 Agent。
+    Hand off the current task to a teammate agent.
 
-    state 和 tool_call_id 由 LangGraph 注入，
-    不会出现在模型看到的工具参数 Schema 中。
+    state and tool_call_id are injected by LangGraph and do not
+    appear in the model-visible tool parameter schema.
     """
     clean_name = name.strip()
     clean_role = role.strip()
@@ -261,7 +261,7 @@ def assign_teammate(
 def report_to_lead(
     summary: Annotated[
         str,
-        "完整工作总结，包括修改、发现、验证结果和遗留问题",
+        "Complete work summary including changes, findings, verification results and open issues",
     ],
     state: Annotated[
         TeamState,
@@ -272,7 +272,7 @@ def report_to_lead(
         InjectedToolCallId,
     ],
 ) -> Command[Literal["lead"]]:
-    """完成工作之后把消息返还给lead"""
+    """Return the completed work summary to the lead agent."""
     teammate_name = state.get("teammate_name","teammate")
     current_ai_message = last_ai_message(state)
 

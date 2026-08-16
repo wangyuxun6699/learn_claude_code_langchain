@@ -9,35 +9,37 @@ try:
 except ImportError:
     pass
 import subprocess
+from pathlib import Path
 from dotenv import load_dotenv
 from langchain.agents import create_agent
 from langchain_openai import ChatOpenAI
-from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage, AIMessage
+from langchain_core.messages import HumanMessage, ToolMessage, AIMessage
 from langchain_core.tools import StructuredTool
 load_dotenv(override=True)
 MODEL = os.environ['MODEL_ID']
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
 OPENAI_BASE_URL = os.getenv('BASE_URL')
-path = os.getcwd()
-SYSTEM = f'you are a coding agent at {path}. Use bash to solve tasks. Act dont explain'
+WORKDIR = Path.cwd()
+SYSTEM = f'you are a coding agent at {WORKDIR}. Use bash to solve tasks. Act dont explain'
 
+# 安全边界：shell=True 仅为教学演示，黑名单/路径检查不等于安全边界；生产请使用权限中间件 + 沙箱。
 def run_bash(command: str) -> str:
     dangerous = ['rm -rf /', 'sudo', 'shutdown', 'reboot', '>/dev/']
     if any((d in command for d in dangerous)):
         return 'Error : Dangerous command blocked'
     try:
-        r = subprocess.run(command, shell=True, cwd=path, capture_output=True, text=True, timeout=120)
+        r = subprocess.run(command, shell=True, cwd=WORKDIR, capture_output=True, text=True, timeout=120)
         out = (r.stdout + r.stderr).strip()
         return out[:50000] if out else '(no output)'
     except subprocess.TimeoutExpired:
         return 'Error: Timeout(120s)'
-    except (FileExistsError, OSError) as e:
+    except OSError as e:
         return f'Error: {e}'
 bash_tool = StructuredTool.from_function(func=run_bash, name='bash', description='Run a shell command')
 TOOLS = [bash_tool]
 
 def build_chat_model():
-    kwargs = {'model': MODEL, 'max_tokens': 8000, 'temperature': 0}
+    kwargs = {'model': MODEL, 'max_completion_tokens': 8000, 'temperature': 0}
     if OPENAI_API_KEY:
         kwargs['api_key'] = OPENAI_API_KEY
     if OPENAI_BASE_URL:

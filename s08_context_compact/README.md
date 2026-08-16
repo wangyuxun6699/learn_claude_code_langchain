@@ -288,8 +288,7 @@ user_prompt_submit
 
 ## 本章文件
 
-- `code.py`：当前主版本。
-- `code_commented.py`：详细注释版，逐步解释工具结果预算、消息配对、自动/响应式/手动压缩及状态替换。
+- `code.py`：带注释教学版（可直接运行）。
 - `code_uncommented.py`：逻辑相同、去掉教学注释的精简版，便于通读完整结构。
 - `images/`：本章的压缩流程图。
 
@@ -469,4 +468,3 @@ CC 的压缩 prompt 有两个硬性要求：
 
 </details>
 
-<!-- translation-sync: zh@v2, en@v2, ja@v2 -->

@@ -343,11 +343,10 @@ Turn 2:
 
 ## 本章文件
 
-- `code.py`：默认可运行版本；
+- `code.py`：带注释教学版（可直接运行）；
 - `code_uncommented.py`：保留必要中文文档字符串、不含教学行注释的完整版本；
-- `code_commented.py`：详细解释任务存储、后台进程、线程安全、通知注入和 LangGraph 状态边界的中文注释版。
 
-三个文件的可执行逻辑一致，只在教学注释密度上有所区别。
+两个文件的可执行逻辑一致，只在教学注释密度上有所区别。
 
 ---
 
@@ -358,7 +357,6 @@ Turn 2:
 ```powershell
 python -m s13_background_tasks.code
 python -m s13_background_tasks.code_uncommented
-python -m s13_background_tasks.code_commented
 ```
 
 试试这些 prompt：

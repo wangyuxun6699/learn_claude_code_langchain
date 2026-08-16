@@ -298,7 +298,7 @@ agent = create_agent(
 
 ## 本章文件
 
-`code.py` 是基础版；`code_middleware.py` 是 s03.5 中间件版；两组代码都保留 commented/uncommented 变体。
+`code.py` 是带注释的基础版；`code_middleware.py` 是 s03.5 中间件归档版；`code_uncommented.py` 是基础版去掉教学注释的精简版。
 
 ---
 
@@ -401,4 +401,3 @@ CC 的 auto 模式下，不会每次都弹对话框。`classifyYoloAction`（`ut
 
 </details>
 
-<!-- translation-sync: zh@v1, en@v1, ja@v1 -->

@@ -561,8 +561,7 @@ def safe_path(raw_path: str) -> Path:
 
 ## 本章文件
 
-- `code.py`：当前主版本；
-- `code_commented.py`：详细注释版，解释上下文采集、分段提示词、缓存、中间件调用时机与安全边界；
+- `code.py`：带注释教学版（可直接运行）；
 - `code_uncommented.py`：与主版本逻辑一致的精简版；
 - `images/system-prompt-overview.svg`：中文原理图；
 - `images/system-prompt-overview.en.svg`：英文原理图；
@@ -587,7 +586,6 @@ Copy-Item .env.example .env
 ```powershell
 python -m s10_system_prompt.code
 python -m s10_system_prompt.code_uncommented
-python -m s10_system_prompt.code_commented
 ```
 
 ### 实验一：观察首次组装与缓存命中
@@ -719,4 +717,3 @@ getSystemPrompt(tools, model, additionalWorkingDirs?, mcpClients?): Promise<stri
 
 </details>
 
-<!-- translation-sync: zh@v2, en@v1, ja@v1 -->

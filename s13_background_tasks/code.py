@@ -1,3 +1,23 @@
+"""
+s13：后台任务系统。
+
+本章在 s12 的持久化 Task System 之上增加两条独立的数据流：
+
+    LangGraph 工具调用
+    └─ bash(command, run_in_background=True)
+       └─ 立即返回包含 bg_id 的 ToolMessage
+
+    后台命令生命周期
+    └─ running → completed / failed / timeout
+       └─ before_model 注入 <task_notification>
+
+关键边界是：原始 tool call 只对应“后台任务已经启动”的 ToolMessage；
+命令完成属于稍后发生的独立事件，不能复用原始 tool call ID。本章通过
+BackgroundNotificationMiddleware 把完成事件追加为新的 HumanMessage。
+
+运行方式：python -m s13_background_tasks.code
+"""
+
 from __future__ import annotations
 
 import html
@@ -28,21 +48,31 @@ from langchain_core.messages import (
 from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
 
+# ============================================================
+# 1. 环境变量、工作区和超时配置
+# ============================================================
 
+# 仓库根目录的 .env 覆盖进程中的同名变量，与前面章节保持一致。
 load_dotenv(override=True)
 
+# 文件工具和 shell 命令都以启动程序时的当前目录为安全边界。
 WORKDIR = Path.cwd().resolve()
+# s12 的业务任务继续保存在 .tasks/*.json 中。
 TASKS_DIR = WORKDIR / ".tasks"
+# 动态 system prompt 会读取可选的长期记忆索引。
 MEMORY_INDEX = WORKDIR / ".memory" / "MEMORY.md"
 
+# 使用 OpenAI-compatible ChatModel；BASE_URL 可以不填。
 MODEL_ID = os.getenv("MODEL_ID", "").strip()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 BASE_URL = os.getenv("BASE_URL", "").strip() or None
 
+# 前台命令应较快返回；后台命令允许更久，但同样必须有超时上限。
 MAX_OUTPUT_TOKENS = int(os.getenv("MAX_OUTPUT_TOKENS", "8000"))
 FOREGROUND_TIMEOUT = int(os.getenv("FOREGROUND_TIMEOUT", "120"))
 BACKGROUND_TIMEOUT = int(os.getenv("BACKGROUND_TIMEOUT", "3600"))
 
+# 尽早检查配置，比等到第一次模型请求时再得到供应商错误更清楚。
 if not MODEL_ID:
     raise RuntimeError("请在 .env 中设置 MODEL_ID")
 
@@ -50,9 +80,15 @@ if not OPENAI_API_KEY:
     raise RuntimeError("请在 .env 中设置 OPENAI_API_KEY")
 
 
+# 导入模块只确保任务目录存在，不会创建具体业务任务。
 TASKS_DIR.mkdir(parents=True, exist_ok=True)
 
 
+# ============================================================
+# 2. s12 持久化任务系统
+# ============================================================
+
+# 业务任务状态和后台 shell 状态属于两套不同的状态机。
 TaskStatus = Literal["pending", "in_progress", "completed"]
 
 VALID_TASK_STATUSES = {
@@ -63,6 +99,7 @@ VALID_TASK_STATUSES = {
 
 TASK_LOCK = RLock()
 
+# RLock 只保护当前 Python 进程内的 JSON 读改写，不是跨进程文件锁。
 @dataclass
 class Task:
     id: str
@@ -75,9 +112,11 @@ class Task:
 
 def _task_path(task_id: str) -> Path:
     """返回任务文件路径，并阻止任务 ID 越过任务目录。"""
+    # 第一层：ID 必须是单个文件名，不能包含 ../ 或子目录。
     if not task_id or Path(task_id).name != task_id:
         raise ValueError(f"无效的任务 ID：{task_id!r}")
 
+    # 第二层：解析后的绝对路径必须仍以 TASKS_DIR 为直接父目录。
     path = (TASKS_DIR / f"{task_id}.json").resolve()
 
     if path.parent != TASKS_DIR.resolve():
@@ -104,6 +143,7 @@ def _validate_task(task: Task) -> None:
 
 def save_task(task: Task) -> None:
     """把任务保存为 UTF-8 JSON 文件。"""
+    # 写入前统一校验，避免无效状态污染后续会话。
     _validate_task(task)
 
     with TASK_LOCK:
@@ -166,6 +206,7 @@ def create_task(
 
     dependencies = list(dict.fromkeys(blockedBy or []))
 
+    # 允许依赖暂时不存在，但依赖 ID 本身必须满足路径安全规则。
     for dependency_id in dependencies:
         if not isinstance(dependency_id, str):
             raise ValueError("依赖任务 ID 必须是字符串")
@@ -202,6 +243,7 @@ def incomplete_dependencies(task: Task) -> list[str]:
         try:
             dependency = load_task(dependency_id)
         except FileNotFoundError:
+            # 缺失依赖按“仍然阻塞”处理，不能误启动下游任务。
             blockers.append(dependency_id)
             continue
 
@@ -227,6 +269,7 @@ def claim_task(
         raise ValueError("任务负责人不能为空")
 
     with TASK_LOCK:
+        # 状态检查、依赖检查和 owner 写入必须处于同一个临界区。
         task = load_task(task_id)
 
         if task.status != "pending":
@@ -268,6 +311,7 @@ def complete_task(task_id: str) -> str:
 
         unblocked: list[Task] = []
 
+        # 只报告被当前任务直接解锁、且全部依赖均完成的下游任务。
         for candidate in list_tasks():
             if candidate.status != "pending":
                 continue
@@ -290,7 +334,11 @@ def complete_task(task_id: str) -> str:
         return message
 
 
-"""后台任务系统"""
+# ============================================================
+# 3. 后台任务数据结构与执行策略
+# ============================================================
+
+# 后台 shell 比业务 Task 多出 failed 和 timeout 两种终态。
 BackgroundStatus = Literal[
     "running",
     "completed",
@@ -300,8 +348,10 @@ BackgroundStatus = Literal[
 
 
 BACKGROUND_LOCK = RLock()
+# ID 只需在当前进程内唯一；程序重启后会从 bg_0001 重新开始。
 _background_counter = 0
 
+# 元数据保存在 dataclass，大段命令输出单独放在 results 字典中。
 @dataclass
 class BackgroundTask:
     id: str
@@ -314,6 +364,7 @@ class BackgroundTask:
 background_tasks: dict[str, BackgroundTask] = {}
 background_results: dict[str, str] = {}
 
+# 启发式只是模型未给参数时的兜底，并不是真正的耗时预测器。
 SLOW_COMMAND_KEYWORDS = (
     "pip install",
     "npm install",
@@ -351,6 +402,7 @@ def should_run_background(
     None  ：使用慢命令启发式判断。
     """
 
+    # 显式 false 也必须被尊重，不能再被关键词覆盖成后台执行。
     if run_in_background is not None:
         return run_in_background
 
@@ -361,6 +413,7 @@ def _coerce_process_output(value: str | bytes | None) -> str:
     if value is None:
         return ""
 
+    # 某些平台在 TimeoutExpired 中仍可能返回 bytes。
     if isinstance(value, bytes):
         return value.decode(errors="replace")
 
@@ -374,6 +427,7 @@ def _terminate_process_tree(process: subprocess.Popen[str]) -> None:
 
     try:
         if os.name == "nt":
+            # 只 kill 外层 cmd.exe 会让真正的子进程继续占用输出管道。
             subprocess.run(
                 [
                     "taskkill",
@@ -388,6 +442,7 @@ def _terminate_process_tree(process: subprocess.Popen[str]) -> None:
                 check=False,
             )
         else:
+            # Popen 使用 start_new_session=True，PID 同时是进程组 ID。
             os.killpg(os.getpgid(process.pid), signal.SIGKILL)
     except (OSError, subprocess.SubprocessError):
         process.kill()
@@ -400,6 +455,7 @@ def execute_shell_command(
     """同步执行命令，返回输出和退出码。"""
 
     try:
+        # 独立进程组让超时处理能够终止整棵派生进程树。
         process_options: dict[str, Any] = {}
         if os.name == "nt":
             process_options["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
@@ -420,6 +476,7 @@ def execute_shell_command(
         try:
             stdout, stderr = process.communicate(timeout=timeout)
         except subprocess.TimeoutExpired as exc:
+            # 先保存异常携带的部分输出，再终止进程树。
             partial_stdout = _coerce_process_output(exc.stdout)
             partial_stderr = _coerce_process_output(exc.stderr)
 
@@ -431,6 +488,7 @@ def execute_shell_command(
                 process.kill()
                 final_stdout, final_stderr = process.communicate()
 
+            # communicate() 可能返回完整输出，也可能只返回剩余输出。
             captured_output = (final_stdout + final_stderr).strip()
             partial_output = (partial_stdout + partial_stderr).strip()
             output = captured_output or partial_output
@@ -469,6 +527,7 @@ def start_background_task(command: str) -> str:
     if not clean_command:
         raise ValueError("后台命令不能为空")
 
+    # 分配 ID 和登记 running 必须在同一把锁内，防止并行调用撞号。
     with BACKGROUND_LOCK:
         _background_counter += 1
         background_id = f"bg_{_background_counter:04d}"
@@ -481,11 +540,13 @@ def start_background_task(command: str) -> str:
         )
 
     def worker() -> None:
+        # 真正耗时的等待发生在线程中，LangGraph 工具节点立即返回。
         output, exit_code = execute_shell_command(
             clean_command,
             BACKGROUND_TIMEOUT,
         )
 
+        # 把系统退出码归一化成模型更容易理解的生命周期状态。
         if exit_code == 0:
             status: BackgroundStatus = "completed"
 
@@ -495,6 +556,7 @@ def start_background_task(command: str) -> str:
         else:
             status = "failed"
 
+        # 状态和输出一起发布，收集者不会读到不完整的终态。
         with BACKGROUND_LOCK:
             task = background_tasks.get(background_id)
 
@@ -513,6 +575,7 @@ def start_background_task(command: str) -> str:
     thread = Thread(
         target=worker,
         name=f"background-{background_id}",
+        # 教学版不阻止解释器退出；生产系统应使用独立 worker。
         daemon=True,
     )
     thread.start()
@@ -533,6 +596,7 @@ def collect_background_results() -> list[str]:
     """
     ready: list[tuple[BackgroundTask, str]] = []
 
+    # 在同一临界区内找出并取走终态任务，确保每个通知只消费一次。
     with BACKGROUND_LOCK:
         ready_ids = [
             background_id
@@ -561,6 +625,7 @@ def collect_background_results() -> list[str]:
         if task.finished_at is not None:
             duration = task.finished_at - task.started_at
 
+        # 外部命令和输出必须转义后才能安全嵌入 XML 风格标签。
         escaped_command = html.escape(task.command, quote=False)
 
         summary = output[:2_000]
@@ -580,6 +645,7 @@ def collect_background_results() -> list[str]:
             "</task_notification>"
         )
 
+        # 任务已从注册表移除，后续模型调用不会再次注入同一结果。
         notifications.append(notification)
 
     return notifications
@@ -605,6 +671,7 @@ class BackgroundNotificationMiddleware(AgentMiddleware):
         state: dict[str, Any],
         runtime: Any,
     ) -> dict[str, Any] | None:
+        # 初次模型调用及每次 tools → model 回边之前都会经过这里。
         notifications = collect_background_results()
 
         if not notifications:
@@ -616,11 +683,16 @@ class BackgroundNotificationMiddleware(AgentMiddleware):
             f"{len(notifications)} 个后台任务通知\033[0m"
         )
 
+        # messages 使用 add_messages reducer，因此这里是追加而不是覆盖。
         return {
             "messages": [
                 HumanMessage(content=content),
             ]
         }
+
+# ============================================================
+# 4. 动态 system prompt
+# ============================================================
 
 PROMPT_SECTIONS = {
     "identity": (
@@ -704,6 +776,7 @@ def get_system_prompt(
         default=str,
     )
 
+    # 工作区、工具和记忆未变化时复用已经组装好的提示词。
     with PROMPT_CACHE_LOCK:
         if (
             context_key == _last_context_key
@@ -750,6 +823,7 @@ def build_prompt_context(
     except OSError as exc:
         print(f"  \033[33m[无法读取记忆] {exc}\033[0m")
 
+    # 从当前 ModelRequest 读取真实注册工具，避免提示不存在的能力。
     enabled_tools = sorted(
         {
             get_tool_name(tool_value)
@@ -775,13 +849,14 @@ def runtime_system_prompt(
 
 
 # ============================================================
-# 文件与命令工具
+# 5. LangChain 文件与命令工具
 # ============================================================
 
 def safe_path(raw_path: str) -> Path:
     """解析工作区路径并阻止目录穿越。"""
     path = (WORKDIR / raw_path).resolve()
 
+    # resolve 后再判断，符号链接和 .. 都不能逃出工作区。
     if not path.is_relative_to(WORKDIR):
         raise ValueError(
             f"路径越过工作区：{raw_path}"
@@ -791,6 +866,7 @@ def safe_path(raw_path: str) -> Path:
 
 
 @tool("bash")
+# 安全边界：shell=True 仅为教学演示，黑名单/路径检查不等于安全边界；生产请使用权限中间件 + 沙箱。
 def run_bash(
     command: str,
     run_in_background: bool | None = None,
@@ -807,6 +883,7 @@ def run_bash(
     if not clean_command:
         return "错误：命令不能为空"
 
+    # 后台路径只等待线程启动，不等待子进程完成。
     if should_run_background(
         clean_command,
         run_in_background,
@@ -821,6 +898,7 @@ def run_bash(
                 f"{type(exc).__name__}：{exc}"
             )
 
+        # 该占位字符串会成为原始 tool call 唯一对应的 ToolMessage。
         return (
             f"[Background task {background_id} started]\n"
             f"Command: {clean_command}\n"
@@ -828,6 +906,7 @@ def run_bash(
             "later in a <task_notification> message."
         )
 
+    # 快命令或显式 false 继续走同步执行路径。
     output, exit_code = execute_shell_command(
         clean_command,
         FOREGROUND_TIMEOUT,
@@ -900,7 +979,7 @@ def run_write(
 
 
 # ============================================================
-# Task System 工具包装
+# s12 Task System 的 LangChain 工具包装
 # ============================================================
 
 @tool("create_task")
@@ -1075,7 +1154,7 @@ TOOLS = [
 
 
 # ============================================================
-# LangChain Agent
+# 6. LangChain Agent 装配
 # ============================================================
 
 model = ChatOpenAI(
@@ -1083,7 +1162,7 @@ model = ChatOpenAI(
     api_key=OPENAI_API_KEY,
     base_url=BASE_URL,
     temperature=0,
-    max_tokens=MAX_OUTPUT_TOKENS,
+    max_completion_tokens=MAX_OUTPUT_TOKENS,
     max_retries=2,
     timeout=120,
 )
@@ -1091,6 +1170,7 @@ model = ChatOpenAI(
 agent = create_agent(
     model=model,
     tools=TOOLS,
+    # 完成通知写入消息状态；动态 prompt 再根据当前请求生成系统消息。
     middleware=[
         BackgroundNotificationMiddleware(),
         runtime_system_prompt,
@@ -1100,7 +1180,7 @@ agent = create_agent(
 
 
 # ============================================================
-# 流式打印与命令行循环
+# 7. 流式打印与命令行循环
 # ============================================================
 
 def content_to_text(content: Any) -> str:
@@ -1158,6 +1238,7 @@ def message_key(
     message: AnyMessage,
 ) -> tuple[str, Any]:
     """生成消息去重键。"""
+    # 供应商消息 ID 最稳定；缺失时退回当前对象身份。
     if message.id:
         return "id", message.id
 
@@ -1183,6 +1264,7 @@ def agent_loop(
 
     final_state: dict[str, Any] | None = None
 
+    # values 模式每次给出完整状态，用 seen 避免重复打印历史消息。
     try:
         for state in agent.stream(
             session_state,
@@ -1213,10 +1295,11 @@ def main() -> None:
     """启动 s13 命令行 Agent。"""
     print("s13: background tasks")
     print(
-        "Enter a question, press Enter to send. "
-        "Type q to quit.\n"
+        "输入问题后按回车发送；"
+        "输入 q 退出。\n"
     )
 
+    # 未配置 checkpointer，所以对话只保存在当前 Python 进程内。
     session_state: dict[str, Any] = {
         "messages": [],
     }
@@ -1252,6 +1335,7 @@ def main() -> None:
 
         print()
 
+    # daemon 线程不会阻止解释器退出，明确提示仍在运行的任务。
     running = count_running_background_tasks()
 
     if running:

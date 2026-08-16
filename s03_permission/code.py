@@ -5,17 +5,16 @@ load_dotenv(override=True)
 from langchain_core.tools import tool
 import os,subprocess
 from pathlib import Path
-from langchain_core.messages import AIMessage,HumanMessage,SystemMessage
+from langchain_core.messages import AIMessage
 from langchain_openai import ChatOpenAI
 from langchain.agents import create_agent
 
 
 
 WORKDIR = Path.cwd()
-path = os.getcwd()
 MODEL_ID = os.getenv("MODEL_ID")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-SYSTEM = f"you are a coding agent at {path}. Use tools to solve tasks. Act dont explain"
+SYSTEM = f"you are a coding agent at {WORKDIR}. Use tools to solve tasks. Act dont explain"
 OPENAI_BASE_URL = os.getenv("BASE_URL")
 
 """第一层检查"""
@@ -34,15 +33,22 @@ def check_deny_list(command:str)-> str | None:
 
 
 
+def resolve_path(raw_path: str) -> Path:
+    candidate = Path(raw_path)
+    if candidate.is_absolute():
+        return candidate.resolve()
+    return (WORKDIR / candidate).resolve()
+
+
 def check_rules(tool_name: str,args: dict) -> str|None:
     if tool_name == "run_bash":
         command = args.get("command","")
-        if any(kw in command for kw in ["rm ", "> /etc/", "chmod 777", "del"]):
+        if command.strip().lower().startswith("del ") or any(kw in command for kw in ["rm ", "> /etc/", "chmod 777"]):
             return "potentially destructive command"
 
     if tool_name in ("run_write", "run_edit", "run_read"):
         path = args.get("path", "")
-        if not (WORKDIR / path).resolve().is_relative_to(WORKDIR):
+        if not resolve_path(path).is_relative_to(WORKDIR):
 
             return "Working outside workspace"
     
@@ -75,18 +81,19 @@ def check_permission(tool_name: str,args: dict) ->bool:
 
 
 @tool
+# 安全边界：shell=True 仅为教学演示，黑名单/路径检查不等于安全边界；生产请使用权限中间件 + 沙箱。
 def run_bash(command:str)->str:
-    """执行 shell 命令，并返回命令输出。"""
+    """Execute a shell command in the current workspace."""
     if not check_permission("run_bash", {"command": command}):
         return "permission denied"
 
     try:
         # 执行模型传入的 shell 命令。
-        # shell=True 允许执行字符串命令；cwd=path 限定命令运行目录。
+        # shell=True 允许执行字符串命令；cwd=WORKDIR 限定命令运行目录。
         r = subprocess.run(
             command,
             shell=True,
-            cwd=path,
+            cwd=WORKDIR,
             capture_output=True,
             text=True,
             timeout=120,
@@ -100,7 +107,7 @@ def run_bash(command:str)->str:
     except subprocess.TimeoutExpired:
         # 如果命令执行超过 120 秒，就返回超时提示。
         return "Error: Timeout(120s)"
-    except (FileExistsError, OSError) as e:
+    except OSError as e:
         # 捕获常见系统级异常，并把错误信息返回给模型。
         return f"Error: {e}"
 
@@ -108,11 +115,11 @@ def run_bash(command:str)->str:
 
 @tool
 def run_read(path: str, limit: int | None = None) -> str:
-    """对文件的内容进行阅读，传入路径和限制长度"""
+    """Read a UTF-8 text file, optionally limiting the returned line count."""
     if not check_permission("run_read", {"path": path}):
         return "Permission denied."
     try:
-        lines = Path(path).read_text().splitlines()
+        lines = resolve_path(path).read_text().splitlines()
         if limit and limit < len(lines):
             lines = lines[:limit] + [f"...({len(lines) - limit} more lines)"]
         return "\n".join(lines)
@@ -123,13 +130,13 @@ def run_read(path: str, limit: int | None = None) -> str:
  
 @tool
 def run_write(path: str,content: str)-> str:
-    """对文件内容进行改写，传入路径和内容"""
+    """Write UTF-8 content to a file, replacing its existing content."""
 
     if not check_permission("run_write", {"path": path, "content": content}):
         return "permission is denied"
 
     try:
-        file_path = Path(path)
+        file_path = resolve_path(path)
         file_path.parent.mkdir(parents=True, exist_ok=True)
         file_path.write_text(content)
         return f"write {len(content)} bytes to {path}"
@@ -140,13 +147,13 @@ def run_write(path: str,content: str)-> str:
 
 @tool
 def run_edit(path: str, old_text: str, new_text: str) ->str:
-    """替换旧文本为新文本，传入路径，旧文本，新文本"""
+    """Replace the first exact occurrence of old_text in a UTF-8 file."""
     if not check_permission("run_edit", {"path": path, "old_text": old_text, "new_text": new_text}):
         return "permission is denied"
     
 
     try:
-        file_path = Path(path)
+        file_path = resolve_path(path)
         text = file_path.read_text()
         if old_text not in text:
             return f"Error: text not found in {path}"
@@ -159,7 +166,7 @@ def run_edit(path: str, old_text: str, new_text: str) ->str:
 
 @tool
 def run_glob(pattern: str) ->str:
-    """查找路径下对应文件类型的文件路径，输入文件类型"""
+    """Find workspace files matching a glob pattern."""
     import glob as g
     try:
         results = []
@@ -198,7 +205,7 @@ TOOLS = [run_bash,run_edit,run_glob,run_write,run_read]
 
 MODEL = ChatOpenAI(
     model = MODEL_ID,
-    max_tokens = 8000,
+    max_completion_tokens = 8000,
     temperature = 0,
     api_key = OPENAI_API_KEY,
     base_url = OPENAI_BASE_URL,

@@ -145,11 +145,10 @@ durable 任务原子写入仓库启动目录下的 `.scheduled_tasks.json`：先
 
 ## 本章文件
 
-- `code.py`：默认可运行版本；
+- `code.py`：带注释教学版（可直接运行）；
 - `code_uncommented.py`：无教学行注释的完整版本，适合快速通读；
-- `code_commented.py`：带详细中文注释的完整版本，解释锁、队列、持久化和 LangGraph 边界。
 
-三个文件的可执行逻辑一致，默认版与无注释版内容相同。
+两个文件的可执行逻辑一致，教学版与无注释版内容相同。
 
 ## 运行
 
@@ -168,7 +167,6 @@ Copy-Item .env.example .env
 ```powershell
 python -m s14_cron_scheduler.code
 python -m s14_cron_scheduler.code_uncommented
-python -m s14_cron_scheduler.code_commented
 ```
 
 可以依次尝试：

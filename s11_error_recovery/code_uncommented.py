@@ -171,6 +171,7 @@ def safe_path(raw_path: str) -> Path:
 
 
 @tool("bash")
+# 安全边界：shell=True 仅为教学演示，黑名单/路径检查不等于安全边界；生产请使用权限中间件 + 沙箱。
 def run_bash(command: str) -> str:
     """Run a shell command in the workspace and return stdout plus stderr."""
     try:
@@ -687,7 +688,7 @@ def agent_loop(session_state: RecoveryAgentState) -> None:
 
 def main() -> None:
     print("s11: LangChain error recovery")
-    print("Enter a question; q/exit/empty input quits.\n")
+    print("输入问题；q/exit/空输入退出。\n")
 
     session_state: RecoveryAgentState = {"messages": []}
     while True:

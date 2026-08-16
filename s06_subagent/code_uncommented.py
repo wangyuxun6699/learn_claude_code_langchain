@@ -125,7 +125,6 @@ DANGEROUS_COMMANDS = [
 
 POTENTIALLY_DESTRUCTIVE_COMMANDS = [
     "rm ",
-    "del ",
     "> /etc/",
     "chmod 777",
 ]
@@ -149,6 +148,8 @@ def check_deny_list(command: str) -> str | None:
 def check_rules(tool_name: str, args: dict[str, Any]) -> str | None:
     if tool_name == "run_bash":
         normalized = str(args.get("command", "")).lower()
+        if normalized.strip().startswith("del "):
+            return "Potentially destructive shell command: del "
         for pattern in POTENTIALLY_DESTRUCTIVE_COMMANDS:
             if pattern.lower() in normalized:
                 return f"Potentially destructive shell command: {pattern}"
@@ -232,6 +233,7 @@ register_hook("Stop", on_stop)
 
 
 @tool
+# 安全边界：shell=True 仅为教学演示，黑名单/路径检查不等于安全边界；生产请使用权限中间件 + 沙箱。
 def run_bash(command: str) -> str:
     """Execute a shell command in the current workspace."""
     try:
@@ -394,7 +396,7 @@ def task(description: str) -> str:
     try:
         result = SUB_AGENT.invoke(
             {"messages": [{"role": "user", "content": description}]},
-            config={"recursion_limit": 64},
+            config={"recursion_limit": 128},
         )
         summary = extract_final_text(result.get("messages", []))
         return summary or "Subagent finished without a textual conclusion."

@@ -539,9 +539,8 @@ agent = create_agent(
 
 ## 本章文件
 
-- `code.py`：默认可运行版本，与无注释版逻辑一致。
+- `code.py`：带注释教学版（可直接运行）。
 - `code_uncommented.py`：便于直接阅读完整控制流的精简版本。
-- `code_commented.py`：逐步解释状态生命周期、错误分类、退避、降级、续写和消息回写的详细注释版。
 
 ---
 
@@ -557,11 +556,10 @@ Copy-Item .env.example .env
 python -m s11_error_recovery.code
 ```
 
-也可以分别运行两个学习版本：
+也可以直接运行无注释版：
 
 ```powershell
 python -m s11_error_recovery.code_uncommented
-python -m s11_error_recovery.code_commented
 ```
 
 > 这些教学 Agent 可以执行命令和修改文件。建议先在测试目录中试用，并认真阅读每次权限提示。
@@ -654,4 +652,3 @@ Token budget 的"继续"不是无限的。当连续 3 次 continuation 且 token
 
 </details>
 
-<!-- translation-sync: zh@v3, en@v1, ja@v1 -->
