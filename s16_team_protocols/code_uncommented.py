@@ -1,34 +1,3 @@
-"""
-s16：Team Protocols —— 固定格式的 request-response 团队握手协议。
-
-s15 用 assign_teammate / report_to_lead 做一次性控制权交接；s16 在其上叠加一层
-结构化协议（spawn 本身几乎不变）：
-
-    Lead                                              Teammate
-      │ assign_teammate(name, role, plan)
-      │   → 投递 handoff_request{request_id, plan} ──► 读收件箱（异步邮箱）
-      │   → Command(goto="teammate")                   ├─ respond_handoff(request_id, approve)
-      │                                                 │    → 投递 handoff_response{request_id, approve}
-      │                                                 ├─（approve=true 时）执行 bash/read/write
-      │                                                 └─ report_result(summary)
-      │                                                      → 投递 result → Command(goto="lead")
-      │ 读收件箱 → 核验 handoff_response + result → 回复用户 / shutdown_team()
-      │   → 投递 shutdown_request ───────────────────► 读收件箱 → shutdown_response() → 结束
-      └ 回复用户
-
-要点（对应参考实现已确认的契约）：
-- handoff_request 字段 request_id + plan；响应工具必须提供 request_id + approve，
-  否则抛错。
-- 待处理请求以 request_id 为 key 存内存 dict。
-- 信封走邮箱（进程内 dict，投递/消费，等价于参考仓库 INBOX_DIR/<name> 文件收件箱）；
-  控制权走 LangGraph Command。
-- 收件箱在每次模型调用前由 ProtocolInboxMiddleware 注入，等价于参考主循环的
-  "Check inbox for protocol messages (shutdown_request, etc)"。
-- 消息用结构化 JSON，不再用 s15 的 XML 标签。
-
-运行方式：python -m s16_team_protocols.code
-"""
-
 from __future__ import annotations
 
 import json
@@ -72,7 +41,6 @@ MessageType = Literal[
     "shutdown_response"
 ]
 
-#邮箱：每个agent有一个收件箱，Lead固定；别的叫自己名字
 MAILBOXES: dict[str,list[dict[str,Any]]] = {"lead": []}
 MAILBOX_LOCK = RLock()
 
@@ -118,9 +86,6 @@ def envelopes_to_text(envelopes: list[dict[str,Any]]) -> str:
     """把信封列表格式化为模型可读的单行 JSON 文本。"""
     return "\n".join(json.dumps(e, ensure_ascii=False) for e in envelopes)
 
-# ============================================================
-# 2. 团队共享状态
-# ============================================================
 
 class TeamState(AgentState):
     messages: Annotated[list[AnyMessage], add_messages]
@@ -144,9 +109,6 @@ def active_agent_name(state: TeamState) -> str:
         return state.get("teammate_name","teammate")
     return "lead"
 
-# ============================================================
-# 3. 收件箱中间件：每次模型调用前注入协议消息
-# ============================================================
 
 class ProtocolInboxMiddleware(AgentMiddleware):
     """
@@ -179,9 +141,6 @@ class ProtocolInboxMiddleware(AgentMiddleware):
 lead_inbox = ProtocolInboxMiddleware("lead")
 teammate_inbox = ProtocolInboxMiddleware("teammate")
 
-# ============================================================
-# 4. 工具调用追踪（与 s15 一致）
-# ============================================================
 
 def _json_text(value:Any) -> str:
     try:
@@ -247,13 +206,11 @@ def assign_teammate(
 
     current_ai_message = last_ai_message(state)
     request_id = _new_id("req")
-    # 关闭本次工具调用
     transfer_message = ToolMessage(
         content=f"已向 {clean_name} 投递 handoff_request {request_id}",
         tool_call_id=tool_call_id,
         name="assign_teammate",
     )
-    # 1) 请求以 request_id 为 key 存入内存 dict
     PENDING_REQUESTS[request_id] = {
         "from": "lead",
         "to": clean_name,
@@ -261,14 +218,12 @@ def assign_teammate(
         "status": "pending",
     }
 
-    # 2) 信封投递到队友收件箱
     post_envelope(
         "lead", clean_name, "handoff_request",
         {"request_id": request_id, "plan": clean_plan},
     )
     print(f"\n\033[36m[handoff] lead -> {clean_name} handoff_request {request_id}\033[0m")
 
-    # 3) 控制权切到 teammate
     return Command(
         graph=Command.PARENT,
         goto="teammate",
@@ -307,10 +262,6 @@ def shutdown_team(
         },
     )
 
-
-# ============================================================
-# 6. Teammate 侧协议工具
-# ============================================================
 
 @tool("respond_handoff")
 def respond_handoff(
@@ -398,10 +349,6 @@ def shutdown_response(
     )
 
 
-# ============================================================
-# 7. 双向通用工具 send_message
-# ============================================================
-
 @tool("send_message")
 def send_message(
     to: Annotated[str, "Recipient mailbox name, e.g. lead or a teammate name"],
@@ -439,10 +386,6 @@ TEAMMATE_TOOLS = [
     send_message,
 ]
 
-
-# ============================================================
-# 8. 动态 system prompt
-# ============================================================
 
 @dynamic_prompt
 def lead_system_prompt(request: ModelRequest[Any]) -> str:
@@ -506,10 +449,6 @@ You communicate only through the fixed request-response mailbox protocol. Rules:
 """.strip()
 
 
-# ============================================================
-# 9. Agent 子图 + 父 StateGraph
-# ============================================================
-
 lead_agent = create_agent(
     model=MODEL,
     tools=LEAD_TOOLS,
@@ -539,14 +478,9 @@ builder = StateGraph(TeamState)
 builder.add_node("lead", lead_agent)
 builder.add_node("teammate", teammate_agent)
 builder.add_edge(START, "lead")
-# 不加固定边；路由完全由各协议工具返回的 Command 决定。
 checkpointer = InMemorySaver()
 team_graph = builder.compile(checkpointer=checkpointer)
 
-
-# ============================================================
-# 10. 流式打印与 CLI
-# ============================================================
 
 def _stream_agent_name(namespace: tuple[str, ...]) -> str:
     for part in reversed(namespace):
