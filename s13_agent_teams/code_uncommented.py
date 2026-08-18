@@ -22,7 +22,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from s13_background_tasks import code as base
+from s11_background_tasks import code as base
 
 
 MODEL = base.model
@@ -480,7 +480,7 @@ def print_new_messages(
             print(f"\033[36m[{agent_name} AIMessage]\033[0m")
             print(text)
 
-def run_turn(query: str,thread_id: str = "s15-main"):
+def run_turn(query: str,thread_id: str = "s13-main"):
     """
     执行一个用户回合。
 

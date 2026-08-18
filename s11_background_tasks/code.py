@@ -15,7 +15,7 @@ s13：后台任务系统。
 命令完成属于稍后发生的独立事件，不能复用原始 tool call ID。本章通过
 BackgroundNotificationMiddleware 把完成事件追加为新的 HumanMessage。
 
-运行方式：python -m s13_background_tasks.code
+运行方式：python -m s11_background_tasks.code
 """
 
 from __future__ import annotations

@@ -1,6 +1,6 @@
-# s13: Background Tasks — 慢操作放后台
+# s11: Background Tasks — 慢操作放后台
 
-[s12](../s12_task_system/) → `s13` → [s14](../s14_cron_scheduler/)
+[s10](../s10_task_system/) → `s11` → [s12](../s12_cron_scheduler/)
 
 > *"慢操作丢后台, agent 继续处理"* — 后台线程跑命令, 完成后注入通知。
 >
@@ -20,11 +20,11 @@ Agent 的 bash 工具也一样。`pip install torch` 要 10 分钟，`npm run bu
 
 ## 解决方案
 
-教学代码沿用 s12 的持久化任务系统和动态 system prompt；为了聚焦后台任务，仍然省略 s11 的完整错误恢复、技能加载和上下文压缩。唯一的核心变化是：耗时 shell 命令被送入后台线程，`bash` 工具立即返回后台任务 ID，命令完成后再把通知注入 LangGraph 消息状态。
+教学代码沿用 s10 的持久化任务系统和动态 system prompt；为了聚焦后台任务，仍然省略已归档的 s11 的完整错误恢复、技能加载和上下文压缩。唯一的核心变化是：耗时 shell 命令被送入后台线程，`bash` 工具立即返回后台任务 ID，命令完成后再把通知注入 LangGraph 消息状态。
 
 同步 vs 后台：
 
-| | 同步 (s12) | 后台 (s13) |
+| | 同步 (s10) | 后台 (s11) |
 |---|---|---|
 | 慢操作 | Agent 干等 | 后台线程执行 |
 | Agent 空闲 | 是 | 否，可以继续处理其他工作 |
@@ -326,9 +326,9 @@ Turn 2:
 
 ---
 
-## 相对 s12 的变更
+## 相对 s10 的变更
 
-| 组件 | 之前 (s12) | 之后 (s13) |
+| 组件 | 之前 (s10) | 之后 (s11) |
 |---|---|---|
 | 执行模型 | 全部同步 | 慢操作后台线程 + 通知注入 |
 | bash schema | `command` | `command` + `run_in_background` |
@@ -355,8 +355,8 @@ Turn 2:
 在仓库根目录运行任一版本：
 
 ```powershell
-python -m s13_background_tasks.code
-python -m s13_background_tasks.code_uncommented
+python -m s11_background_tasks.code
+python -m s11_background_tasks.code_uncommented
 ```
 
 试试这些 prompt：
@@ -384,7 +384,7 @@ python -m s13_background_tasks.code_uncommented
 - 没有后台任务并发数量限制；
 - 没有交互式命令停滞看门狗；
 - 当前回合结束后完成的通知，要等下一次模型调用才会注入；
-- s11 的完整模型错误恢复没有合并进本章。
+- 已归档的 s11 Error Recovery 的完整模型错误恢复没有合并进本章。
 
 ---
 
@@ -392,7 +392,7 @@ python -m s13_background_tasks.code_uncommented
 
 后台任务解决了"慢操作不阻塞"。但如果想定时做某件事呢？比如"每天早上 9 点跑测试"、"每 5 分钟检查一次服务器状态"。
 
-s14 Cron Scheduler → 给 Agent 装一个闹钟。
+s12 Cron Scheduler → 给 Agent 装一个闹钟。
 
 <details>
 <summary>深入 CC 源码</summary>

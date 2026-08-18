@@ -18,7 +18,7 @@ complete_task 会持久化完成状态，并报告因此解锁的直接下游任
 LangChain 的 create_agent 会编译 LangGraph 工具循环，所以本章不手写
 “模型调用—工具执行—结果回填—再次调用模型”的 while 循环。
 
-运行方式：python -m s12_task_system.code
+运行方式：python -m s10_task_system.code
 """
 
 from __future__ import annotations

@@ -1,10 +1,10 @@
-# s15: Agent Teams — 用 LangGraph Handoff 组织多 Agent 协作
+# s13: Agent Teams — 用 LangGraph Handoff 组织多 Agent 协作
 
-[s14](../s14_cron_scheduler/) → **s15** → [s16](../s16_team_protocols/)
+[s12](../s12_cron_scheduler/) → **s13** → [s14](../s14_mcp_plugin/)
 
 > 一个 Agent 负责统筹，一个 Agent 负责执行；通过显式状态和工具调用完成控制权交接。
 
-本章参考 [`shareAI-lab/learn-claude-code/s15_agent_teams`](https://github.com/shareAI-lab/learn-claude-code/tree/main/s15_agent_teams)，使用本项目锁定的 **LangChain 1.3.11 + LangGraph 1.2.7** 重新实现 Agent Teams 的核心概念。
+本章参考 [`shareAI-lab/learn-claude-code/s13_agent_teams`](https://github.com/shareAI-lab/learn-claude-code/tree/main/s13_agent_teams)，使用本项目锁定的 **LangChain 1.3.11 + LangGraph 1.2.7** 重新实现 Agent Teams 的核心概念。
 
 参考仓库用“队友线程 + 文件收件箱”模拟真实 Claude Code 的异步团队；本章代码采用另一条更贴近 LangChain/LangGraph 的路线：用两个 `create_agent` 子图分别表示 Lead 和 Teammate，再由父级 `StateGraph` 和 `Command` 完成顺序 handoff。
 
@@ -250,7 +250,7 @@ Teammate 没有 `assign_teammate`，因此不能递归创建队友；也没有�
 - handoff 工具返回的 `Command`、目标节点和状态更新字段；
 - 工具异常类型与消息。
 
-Lead 还复用 s13 的 `BackgroundNotificationMiddleware`，在模型调用前收集已完成的后台命令结果。Teammate 没有这个 middleware，因为本章把后台结果的统筹责任留给 Lead。
+Lead 还复用 s11 的 `BackgroundNotificationMiddleware`，在模型调用前收集已完成的后台命令结果。Teammate 没有这个 middleware，因为本章把后台结果的统筹责任留给 Lead。
 
 Middleware 适合日志、重试、权限检查、动态 prompt、上下文压缩等横切逻辑；业务工具则应专注于实际动作。两者分离后，不需要在每个工具里重复写追踪代码。
 
@@ -261,7 +261,7 @@ checkpointer = InMemorySaver()
 team_graph = builder.compile(checkpointer=checkpointer)
 ```
 
-`run_turn` 每次只传入新的 `HumanMessage`，并固定使用 `thread_id="s15-main"`。`InMemorySaver` 根据这个 ID 找回先前 checkpoint，因此 Lead 能在下一轮继续看到前面的委派和汇报。
+`run_turn` 每次只传入新的 `HumanMessage`，并固定使用 `thread_id="s13-main"`。`InMemorySaver` 根据这个 ID 找回先前 checkpoint，因此 Lead 能在下一轮继续看到前面的委派和汇报。
 
 需要区分三种“状态保存”：
 
@@ -281,7 +281,7 @@ team_graph.stream(
 )
 ```
 
-`subgraphs=True` 让流事件携带 Lead/Teammate 子图命名空间，终端才能标出当前消息来自哪个 Agent。`values` 模式返回每一步的累计状态，因此同一历史消息会反复出现；`print_new_messages` 使用 s13 的 `message_key` 去重，只打印首次观察到的 AI 文本。
+`subgraphs=True` 让流事件携带 Lead/Teammate 子图命名空间，终端才能标出当前消息来自哪个 Agent。`values` 模式返回每一步的累计状态，因此同一历史消息会反复出现；`print_new_messages` 使用 s11 的 `message_key` 去重，只打印首次观察到的 AI 文本。
 
 工具调用与 `ToolMessage` 已由 middleware 完整打印，所以流处理函数只打印 AI 文本，避免重复输出。
 
@@ -307,11 +307,11 @@ team_graph.stream(
 
 整个过程可能包含多次模型调用和工具调用，但控制权在任一时刻只属于一个 Agent。
 
-## 相对 s14 的变化
+## 相对 s12 的变化
 
-本章复用的是 s13 的模型、文件工具、任务系统和后台通知 middleware，没有把 s14 的 Cron 工具带入团队图。这样可以把注意力集中在 handoff，而不是继续扩大工具集合。
+本章复用的是 s11 的模型、文件工具、任务系统和后台通知 middleware，没有把 s12 的 Cron 工具带入团队图。这样可以把注意力集中在 handoff，而不是继续扩大工具集合。
 
-| 组件 | s14 | s15 |
+| 组件 | s12 | s13 |
 |---|---|---|
 | Agent 数量 | 单个 Agent | Lead + Teammate 两个 Agent 子图 |
 | 外层编排 | 单 Agent 回合 + 调度线程 | `StateGraph(TeamState)` |
@@ -343,21 +343,21 @@ Copy-Item .env.example .env
 运行任一版本：
 
 ```powershell
-python -m s15_agent_teams.code
-python -m s15_agent_teams.code_uncommented
+python -m s13_agent_teams.code
+python -m s13_agent_teams.code_uncommented
 ```
 
 也支持直接运行文件：
 
 ```powershell
-python s15_agent_teams/code.py
+python s13_agent_teams/code.py
 ```
 
 可以尝试以下 prompt：
 
 1. `请把当前目录下的 Python 文件清单交给 alice，她是代码审查员，让她总结每章的文件命名规律。`
 2. `让 bob 作为测试工程师检查 schema.sql 的 SQL 语法和约束设计，完成后你再复核他的结论。`
-3. `先自己读取 README.md，再把 s15_agent_teams/code.py 的架构分析交给一名 LangGraph 专家。收到汇报后比较两者。`
+3. `先自己读取 README.md，再把 s13_agent_teams/code.py 的架构分析交给一名 LangGraph 专家。收到汇报后比较两者。`
 
 观察终端中的四类信号：
 
@@ -371,10 +371,10 @@ python s15_agent_teams/code.py
 不调用模型也可以先做静态验证：
 
 ```powershell
-python -m py_compile s15_agent_teams/code.py
-python -m py_compile s15_agent_teams/code_uncommented.py
+python -m py_compile s13_agent_teams/code.py
+python -m py_compile s13_agent_teams/code_uncommented.py
 
-python -c "import s15_agent_teams.code as c; print(type(c.team_graph).__name__)"
+python -c "import s13_agent_teams.code as c; print(type(c.team_graph).__name__)"
 ```
 
 预期最后输出 `CompiledStateGraph`。
@@ -409,7 +409,7 @@ python -c "import s15_agent_teams.code as c; print(type(c.team_graph).__name__)"
 
 ## 参考资料
 
-- [参考仓库 s15：Agent Teams](https://github.com/shareAI-lab/learn-claude-code/tree/main/s15_agent_teams)
+- [参考仓库 s13：Agent Teams](https://github.com/shareAI-lab/learn-claude-code/tree/main/s13_agent_teams)
 - [LangChain 官方文档：Multi-agent patterns](https://docs.langchain.com/oss/python/langchain/multi-agent)
 - [LangChain 官方文档：Handoffs](https://docs.langchain.com/oss/python/langchain/multi-agent/handoffs)
 - [LangChain 官方文档：Agents](https://docs.langchain.com/oss/python/langchain/agents)
@@ -418,6 +418,6 @@ python -c "import s15_agent_teams.code as c; print(type(c.team_graph).__name__)"
 
 ## 接下来
 
-s15 已经能在 Lead 和 Teammate 之间交接控制权，但还没有一套完整的团队生命周期协议。
+s13 已经能在 Lead 和 Teammate 之间交接控制权。新版 17 章编排中，旧版的 s16 Team Protocols、s17 Autonomous Agents、s18 Worktree Isolation 已并入本章，对应材料见 [legacy](../legacy/)。
 
-[s16: Team Protocols](../s16_team_protocols/) 将继续处理结构化消息、任务状态、权限与优雅关机等协作约定。
+[s14: MCP & Plugin](../s14_mcp_plugin/) 将把外部工具接入同一个工具池。

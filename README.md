@@ -4,7 +4,7 @@
 > 本项目是**纯 Python** 实现（LangChain 1.x + LangGraph + OpenAI-compatible ChatModel），仓库内没有任何 Java 文件。
 
 框架选对了，代码量最多可以少一半。这个仓库代码就是基于最热门的agent框架[langchain](https://github.com/langchain-ai/langchain)和[langgraph](https://github.com/langchain-ai/langgraph)来深度拆解最热门的agent产品ClaudeCode
-本项目参考 [shareAI-lab/learn-claude-code](https://github.com/shareAI-lab/learn-claude-code) 的 20 章编排，用 **LangChain 1.x + LangGraph + OpenAI-compatible ChatModel** 重新实现同一组 Agent Harness 概念。
+本项目参考 [shareAI-lab/learn-claude-code](https://github.com/shareAI-lab/learn-claude-code) 的 17 章编排，用 **LangChain 1.x + LangGraph + OpenAI-compatible ChatModel** 重新实现同一组 Agent Harness 概念。
 
 > Agency 来自模型，Agent 产品 = 模型 + Harness。
 
@@ -98,7 +98,7 @@ Harness = Tools + Knowledge + Observation + Action Interfaces + Permissions
 
 - **策划知识。** 给 agent 领域专长。产品文档、架构决策记录、风格指南、合规要求。按需加载（s07），不要前置塞入。Agent 应该知道有什么可用，然后自己拉取所需。
 
-- **管理上下文。** 给 agent 干净的记忆。子 agent 隔离（s06）防止噪声泄露。上下文压缩（s08）防止历史淹没。任务系统（s12）让目标持久化到单次对话之外。
+- **管理上下文。** 给 agent 干净的记忆。子 agent 隔离（s06）防止噪声泄露。上下文压缩（s08）防止历史淹没。任务系统（s10）让目标持久化到单次对话之外。
 
 - **控制权限。** 给 agent 边界。沙箱化文件访问。对破坏性操作要求审批。在 agent 和外部系统之间实施信任边界。这是安全工程与 harness 工程的交汇点。
 
@@ -130,7 +130,7 @@ Claude Code = 一个 agent loop
 
 就这些。这就是全部架构。每一个组件都是 harness 机制 -- 为 agent 构建的栖居世界的一部分。Agent 本身呢？是 Claude。一个模型。由 Anthropic 在人类推理和代码的全部广度上训练而成。Harness 没有让 Claude 变聪明。Claude 本来就聪明。Harness 给了 Claude 双手、双眼和一个工作空间。
 
-这就是 Claude Code 作为教学标本的意义：**它展示了当你信任模型、把工程精力集中在 harness 上时会发生什么。** 本仓库的课程（s01-s20）逐步拆解并重组 Claude Code 架构中的 harness 机制。学完之后，你理解的不只是 Claude Code 怎么工作，而是适用于任何领域、任何 agent 的 harness 工程通用原则。
+这就是 Claude Code 作为教学标本的意义：**它展示了当你信任模型、把工程精力集中在 harness 上时会发生什么。** 本仓库的课程（s01-s17）逐步拆解并重组 Claude Code 架构中的 harness 机制。学完之后，你理解的不只是 Claude Code 怎么工作，而是适用于任何领域、任何 agent 的 harness 工程通用原则。
 
 启示不是 "复制 Claude Code"。启示是：**最好的 agent 产品，出自那些明白自己的工作是 harness 而非 intelligence 的工程师之手。**
 
@@ -183,7 +183,7 @@ Claude Code = 一个 agent loop
     让 agent 在特定领域高效工作的 harness。
 ```
 
-**20 个递进式课程, 从简单循环到完整 Harness。**
+**17 个递进式课程, 从简单循环到完整 Harness。**
 **每个课程添加一个 harness 机制。每个机制有一句格言。**
 
 > **s01** &nbsp; *"One loop & Bash is all you need"* &mdash; 一个工具 + 一个循环 = 一个 Agent
@@ -204,27 +204,21 @@ Claude Code = 一个 agent loop
 >
 > **s09** &nbsp; *"记住该记的, 忘掉该忘的"* &mdash; 三个子系统: 筛选、提取、整理
 >
-> **s10** &nbsp; *"prompt 是组装出来的, 不是写死的"* &mdash; 分段 + 按需拼接
+> **s10** &nbsp; *"大目标拆成小任务, 排好序, 持久化"* &mdash; 文件持久化的任务图, 多 agent 协作的基础
 >
-> **s11** &nbsp; *"错误不是终点, 是重试的起点"* &mdash; 出错时会重试、腾空间、换路子
+> **s11** &nbsp; *"慢操作丢后台, agent 继续思考"* &mdash; 后台线程跑命令, 完成后注入通知
 >
-> **s12** &nbsp; *"大目标拆成小任务, 排好序, 持久化"* &mdash; 文件持久化的任务图, 多 agent 协作的基础
+> **s12** &nbsp; *"定时触发, 不需要人推"* &mdash; 按时间自动触发任务
 >
-> **s13** &nbsp; *"慢操作丢后台, agent 继续思考"* &mdash; 后台线程跑命令, 完成后注入通知
+> **s13** &nbsp; *"一个搞不定, 组队来"* &mdash; 持久队友 + 异步邮箱 + 协作协议 + worktree 隔离（原 s15-s18 合并）
 >
-> **s14** &nbsp; *"定时触发, 不需要人推"* &mdash; 按时间自动触发任务
+> **s14** &nbsp; *"能力不够? 插上 MCP"* &mdash; 把外部工具接进同一个工具池
 >
-> **s15** &nbsp; *"一个搞不定, 组队来"* &mdash; 持久化队友 + 异步邮箱
+> **s15** &nbsp; *"机制很多，循环一个"* &mdash; 前面所有机制回到一个完整 harness
 >
-> **s16** &nbsp; *"队友之间要有约定"* &mdash; 用固定的请求-回复格式沟通
+> **s16** &nbsp; *"编排形状固定时，就把它写进代码"* &mdash; 保存好的 workflow 用 journal 续跑
 >
-> **s17** &nbsp; *"队友自己看板, 有活就认领"* &mdash; 不需要领导逐个分配, 自组织
->
-> **s18** &nbsp; *"各干各的目录, 互不干扰"* &mdash; 任务管目标, worktree 管目录, 按 ID 绑定
->
-> **s19** &nbsp; *"能力不够? 插上 MCP"* &mdash; 把外部工具接进同一个工具池
->
-> **s20** &nbsp; *"机制很多，循环一个"* &mdash; 前面所有机制回到一个完整 harness
+> **s17** &nbsp; *"目标决定循环什么时候真正结束"* &mdash; 独立判断器审查，目标不可能/失败/超限时交还用户
 
 ---
 
@@ -236,7 +230,7 @@ Claude Code = 一个 agent loop
 为保证学习路径清晰，仓库有意简化或省略了部分生产机制：
 
 - 完整事件 / Hook 总线 (例如 PreToolUse、SessionStart/End、ConfigChange)。
-  s12 仅提供教学用途的最小 append-only 生命周期事件流。
+  s10 仅提供教学用途的最小 append-only 生命周期事件流。
 - 基于规则的权限治理与信任流程
 - 会话生命周期控制 (resume/fork) 与更完整的 worktree 生命周期控制
 - 完整 MCP 运行时细节 (transport/OAuth/资源订阅/轮询)
@@ -269,7 +263,7 @@ flowchart TD
 
         S2["<b>第二阶段：做复杂任务</b><br/>━━━━━━━━━━━━━<br/><b>s05 TodoWrite</b><br/>└─ 先列计划，再执行<br/><br/><b>s06 Subagent</b><br/>└─ 子节点干活带回结果<br/><br/><b>s08 Context Compact</b><br/>└─ 长下文腾空间"]:::stage2
 
-        S3["<b>第三阶段：记住和恢复</b><br/>━━━━━━━━━━━━━<br/><b>s09 Memory</b><br/>└─ 该记记，该忘忘<br/><br/><b>s10 System Prompt</b><br/>└─ 运行时组装<br/><br/><b>s11 Error Recovery</b><br/>└─ 重试换路子"]:::stage3
+        S3["<b>第三阶段：跨会话记忆</b><br/>━━━━━━━━━━━━━<br/><b>s09 Memory</b><br/>└─ 该记记，该忘忘"]:::stage3
 
         S1 ==> S2 ==> S3
     end
@@ -277,20 +271,27 @@ flowchart TD
     %% 第二层：4-6阶段
     subgraph Phase2 ["🚀 阶段 4-6：高阶能力进化（长期、协作与融合）"]
         direction LR
-        S4["<b>第四阶段：让任务长期运行</b><br/>━━━━━━━━━━━━━<br/><b>s12 Task System</b><br/>└─ 任务落盘记依赖<br/><br/><b>s13 Background Tasks</b><br/>└─ 慢操作丢后台<br/><br/><b>s14 Cron Scheduler</b><br/>└─ 按时自动触发"]:::stage4
+        S4["<b>第四阶段：让任务长期运行</b><br/>━━━━━━━━━━━━━<br/><b>s10 Task System</b><br/>└─ 任务落盘记依赖<br/><br/><b>s11 Background Tasks</b><br/>└─ 慢操作丢后台<br/><br/><b>s12 Cron Scheduler</b><br/>└─ 按时自动触发"]:::stage4
 
-        S5["<b>第五阶段：让多个 Agent 协作</b><br/>━━━━━━━━━━━━━<br/><b>s15 Agent Teams</b><br/>└─ 队友 + 邮箱通信<br/><br/><b>s16 Team Protocols</b><br/>└─ 固定收发格式<br/><br/><b>s17 Autonomous Agents</b><br/>└─ 自己看板认领活<br/><br/><b>s18 Worktree Isolation</b><br/>└─ 隔离目录"]:::stage5
+        S5["<b>第五阶段：让多个 Agent 协作</b><br/>━━━━━━━━━━━━━<br/><b>s13 Agent Teams</b><br/>└─ 队友 + handoff + 协作协议<br/>└─ 原子认领就绪任务<br/>└─ 任务绑定的 Worktree"]:::stage5
 
-        S6["<b>第六阶段：接外部能力合体</b><br/>━━━━━━━━━━━━━<br/><b>s07 Skill Loading</b><br/>└─ 技能按需展开<br/><br/><b>s19 MCP Plugin</b><br/>└─ 外部接进工具池<br/><br/><b>s20 Comprehensive Agent</b><br/>└─ 全机制回单循环"]:::stage6
+        S6["<b>第六阶段：接外部能力合体</b><br/>━━━━━━━━━━━━━<br/><b>s07 Skill Loading</b><br/>└─ 技能按需展开<br/><br/><b>s14 MCP Plugin</b><br/>└─ 外部接进工具池<br/><br/><b>s15 Integrated Harness</b><br/>└─ 课程机制回单循环"]:::stage6
 
         S4 ==> S5 ==> S6
     end
 
-    %% 将两个模块连接起来，形成 Z 字形阅读流
-    Phase1 ===> Phase2
+    %% 第三层：第七阶段
+    subgraph Phase3 ["🎯 第七阶段：编排与目标闭环"]
+        direction LR
+        S7["<b>第七阶段：编排并完成</b><br/>━━━━━━━━━━━━━<br/><b>s16 Workflow Runtime</b><br/>└─ 脚本拥有固定编排<br/><br/><b>s17 Goal Loop</b><br/>└─ 独立判断决定何时停止"]:::stage1
+        S6 ==> S7
+    end
+
+    %% 将三个模块连接起来，形成 Z 字形阅读流
+    Phase1 ===> Phase2 ===> Phase3
 
     %% 应用背景样式
-    class Phase1,Phase2 groupBox
+    class Phase1,Phase2,Phase3 groupBox
 ```
 
 
@@ -298,7 +299,7 @@ flowchart TD
 
 ## 学完之后 -- 从理解到落地
 
-20 个课程走完, 你已经从内到外理解了 harness 工程的运作原理。两种方式把知识变成产品:
+17 个课程走完, 你已经从内到外理解了 harness 工程的运作原理。两种方式把知识变成产品:
 
 ### Kode Agent CLI -- 开源 Coding Agent CLI
 
@@ -363,7 +364,7 @@ OPENAI_API_KEY=your-api-key
 BASE_URL=https://your-openai-compatible-endpoint/v1
 ```
 
-如果 s11 使用备用模型，再设置 `FALLBACK_MODEL_ID`。不要提交真实 `.env`。
+如果使用备用模型，再设置 `FALLBACK_MODEL_ID`。不要提交真实 `.env`。
 
 
 
@@ -380,17 +381,16 @@ BASE_URL=https://your-openai-compatible-endpoint/v1
 | 07 | [s07: Skill Loading](s07_skill_loading/) | Skills 渐进加载 | ✅ 已实现 |
 | 08 | [s08: Context Compact](s08_context_compact/) | 多层上下文压缩 | ✅ 已实现 |
 | 09 | [s09: Memory](s09_memory/) | Markdown 长期记忆 | ✅ 已实现 |
-| 10 | [s10: System Prompt](s10_system_prompt/) | 动态 system prompt | ✅ 已实现 |
-| 11 | [s11: Error Recovery](s11_error_recovery/) | 截断续写、上下文恢复与退避降级 | ✅ 已实现 |
-| 12 | [s12: Task System](s12_task_system/) | 持久任务、依赖与认领/完成状态 | ✅ 已实现 |
-| 13 | [s13: Background Tasks](s13_background_tasks/) | 后台命令、生命周期与完成通知 | ✅ 已实现 |
-| 14 | [s14: Cron Scheduler](s14_cron_scheduler/) | 五段式 Cron、持久化、到期队列与自动交付 | ✅ 已实现 |
-| 15 | [s15: Agent Teams](s15_agent_teams/) | Lead/Teammate 子图、共享状态与双向 handoff | ✅ 已实现 |
-| 16 | [s16: Team Protocols](s16_team_protocols/) | 等待 LangChain 实现 | ⬜ 占位 |
-| 17 | [s17: Autonomous Agents](s17_autonomous_agents/) | 等待 LangChain 实现 | ⬜ 占位 |
-| 18 | [s18: Worktree Isolation](s18_worktree_isolation/) | 等待 LangChain 实现 | ⬜ 占位 |
-| 19 | [s19: MCP & Plugin](s19_mcp_plugin/) | 等待 LangChain 实现 | ⬜ 占位 |
-| 20 | [s20: Comprehensive](s20_comprehensive/) | 等待 LangChain 实现 | ⬜ 占位 |
+| 10 | [s10: Task System](s10_task_system/) | 持久任务、依赖与认领/完成状态 | ✅ 已实现 |
+| 11 | [s11: Background Tasks](s11_background_tasks/) | 后台命令、生命周期与完成通知 | ✅ 已实现 |
+| 12 | [s12: Cron Scheduler](s12_cron_scheduler/) | 五段式 Cron、持久化、到期队列与自动交付 | ✅ 已实现 |
+| 13 | [s13: Agent Teams](s13_agent_teams/) | Lead/Teammate 子图、共享状态与双向 handoff | ✅ 已实现 |
+| 14 | [s14: MCP & Plugin](s14_mcp_plugin/) | 等待 LangChain 实现 | ⬜ 占位 |
+| 15 | [s15: Integrated Harness](s15_integrated_harness/) | 等待 LangChain 实现 | ⬜ 占位 |
+| 16 | [s16: Workflow Runtime](s16_workflow_runtime/) | 等待 LangChain 实现 | ⬜ 占位 |
+| 17 | [s17: Goal Loop](s17_goal_loop/) | 等待 LangChain 实现 | ⬜ 占位 |
+
+> 旧 20 章中不再单独成章的 s10 System Prompt、s11 Error Recovery，以及并入 s13 的 s16-s18 团队章节，已原样归档到 [legacy/](legacy/)。
 
 ## 目录约定
 
@@ -414,17 +414,14 @@ learn_claude_code/
 │   ├── images/
 │   └── README.md
 ├── ...
-├── s11_error_recovery/ ... s14_cron_scheduler/
+├── s10_task_system/ ... s13_agent_teams/
 │   ├── code.py
 │   ├── code_uncommented.py
 │   └── README.md
-├── s15_agent_teams/
-│   ├── code.py
-│   ├── code_uncommented.py
-│   └── README.md
-├── s16_team_protocols/ ... s20_comprehensive/
+├── s14_mcp_plugin/ ... s17_goal_loop/
 │   ├── code.py              # 空占位（未实现）
 │   └── README.md            # 状态说明
+├── legacy/                  # 20 章旧编排中移除/合并的章节（存档）
 ├── skills/                  # s07 可扫描的示例 Skills
 ├── .env.example
 └── requirements.txt

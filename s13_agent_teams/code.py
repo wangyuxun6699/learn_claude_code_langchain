@@ -19,7 +19,7 @@ LangGraph StateGraph 把它们组织成 Lead <-> Teammate 的顺序 handoff 工�
 可解释的 handoff，而不是多个队友并行执行；并行 fan-out/fan-in 留给更完整的团队
 调度器。
 
-运行方式：python -m s15_agent_teams.code
+运行方式：python -m s13_agent_teams.code
 """
 
 from __future__ import annotations
@@ -44,14 +44,14 @@ from langgraph.graph.message import add_messages
 from langgraph.prebuilt import InjectedState
 from langgraph.types import Command
 
-# 兼容 `python s15_agent_teams/code.py` 直接运行。以 `python -m` 启动时
+# 兼容 `python s13_agent_teams/code.py` 直接运行。以 `python -m` 启动时
 # 仓库根目录通常已经在 sys.path 中，这个判断不会重复插入。
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from s13_background_tasks import code as base
+from s11_background_tasks import code as base
 
 
 # 复用 s13 已配置好的 ChatOpenAI 模型、工作目录和文件/任务/后台工具。这样本章
@@ -578,7 +578,7 @@ def print_new_messages(
             print(f"\033[36m[{agent_name} AIMessage]\033[0m")
             print(text)
 
-def run_turn(query: str,thread_id: str = "s15-main"):
+def run_turn(query: str,thread_id: str = "s13-main"):
     """
     执行一个用户回合。
 

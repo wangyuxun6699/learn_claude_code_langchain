@@ -1,14 +1,14 @@
-# s14: Cron Scheduler — 按时间表生产工作
+# s12: Cron Scheduler — 按时间表生产工作
 
-[s13](../s13_background_tasks/) → **s14** → [s15](../s15_agent_teams/)
+[s11](../s11_background_tasks/) → **s12** → [s13](../s13_agent_teams/)
 
 > 按时间表生产工作，让调度与执行解耦。
 
-本章参考 [`shareAI-lab/learn-claude-code/s14_cron_scheduler`](https://github.com/shareAI-lab/learn-claude-code/tree/main/s14_cron_scheduler)，使用 **LangChain 1.x + LangGraph** 重新实现同一组 Cron Scheduler 概念。参考仓库直接维护 Anthropic 消息和工具循环；本项目复用 s13 的 `create_agent`、后台任务 middleware 与工具集合，把重点放在定时调度、队列交付和持久化边界上。
+本章参考 [`shareAI-lab/learn-claude-code/s12_cron_scheduler`](https://github.com/shareAI-lab/learn-claude-code/tree/main/s12_cron_scheduler)，使用 **LangChain 1.x + LangGraph** 重新实现同一组 Cron Scheduler 概念。参考仓库直接维护 Anthropic 消息和工具循环；本项目复用 s11 的 `create_agent`、后台任务 middleware 与工具集合，把重点放在定时调度、队列交付和持久化边界上。
 
 ## 问题
 
-s13 已经能把慢命令送到后台，但所有工作仍需用户主动触发。类似下面的任务不应该要求人反复发送同一个 prompt：
+s11 已经能把慢命令送到后台，但所有工作仍需用户主动触发。类似下面的任务不应该要求人反复发送同一个 prompt：
 
 - 每天 09:00 运行测试；
 - 每 10 分钟检查一次 CI；
@@ -132,9 +132,9 @@ durable 任务原子写入仓库启动目录下的 `.scheduled_tasks.json`：先
 
 两个调度线程都是 daemon。若要求应用关闭后仍然准时执行，应使用系统 crontab、systemd timer、Windows Task Scheduler 或外部工作流平台。
 
-## 相对 s13 的变化
+## 相对 s11 的变化
 
-| 组件 | s13 | s14 |
+| 组件 | s11 | s12 |
 |---|---|---|
 | 触发来源 | 用户输入 | 用户输入 + Cron Scheduler |
 | 新类型 | — | `CronJob` |
@@ -165,8 +165,8 @@ Copy-Item .env.example .env
 运行任一版本：
 
 ```powershell
-python -m s14_cron_scheduler.code
-python -m s14_cron_scheduler.code_uncommented
+python -m s12_cron_scheduler.code
+python -m s12_cron_scheduler.code_uncommented
 ```
 
 可以依次尝试：
@@ -196,9 +196,9 @@ python -m s14_cron_scheduler.code_uncommented
 
 ## 接下来
 
-s14 让一个 Agent 能自动按时间工作。但重构大型系统时，一个 Agent 的注意力和上下文仍然有限。
+s12 让一个 Agent 能自动按时间工作。但重构大型系统时，一个 Agent 的注意力和上下文仍然有限。
 
-[s15: Agent Teams](../s15_agent_teams/) 将进入多 Agent 协作：持久队友、异步收件箱和团队生命周期。
+[s13: Agent Teams](../s13_agent_teams/) 将进入多 Agent 协作：持久队友、异步收件箱和团队生命周期。
 
 <details>
 <summary>深入 CC 源码</summary>

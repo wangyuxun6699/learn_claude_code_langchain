@@ -4,7 +4,7 @@
 >
 > **Harness 层**：长期记忆 — 检索、注入、抽取与 Markdown 持久化。
 
-[s08](../s08_context_compact/) → **s09** → [s10](../s10_system_prompt/)
+[s08](../s08_context_compact/) → **s09** → [s10](../s10_task_system/)
 
 ---
 
@@ -737,9 +737,9 @@ python -m s09_memory.code
 
 ## 接下来
 
-记忆、压缩、工具都已就绪，但 system prompt 还是硬编码的一大段字符串。增加工具需要手动补充描述，切换项目也要重写 prompt。
+记忆、压缩、工具都已就绪。下一章开始把能力从「单次会话内」推进到「跨会话、可持久化」的任务规划。
 
-s10 将 system prompt 拆成多个片段并在运行时组装，让不同项目、工具和上下文组合出不同的提示词。
+[s10: Task System](../s10_task_system/) 把大目标拆成可持久化、可认领、带依赖关系的小任务。
 
 <details>
 <summary>深入 CC 源码</summary>

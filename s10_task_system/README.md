@@ -1,10 +1,10 @@
-# s12：Task System — 目标太大，拆成小任务
+# s10：Task System — 目标太大，拆成小任务
 
-> LangChain / LangGraph 教学改编版。章节结构、任务字段和依赖语义参考 [shareAI-lab/learn-claude-code](https://github.com/shareAI-lab/learn-claude-code) 的 [s12_task_system](https://github.com/shareAI-lab/learn-claude-code/tree/main/s12_task_system)。
+> LangChain / LangGraph 教学改编版。章节结构、任务字段和依赖语义参考 [shareAI-lab/learn-claude-code](https://github.com/shareAI-lab/learn-claude-code) 的 [s10_task_system](https://github.com/shareAI-lab/learn-claude-code/tree/main/s10_task_system)。
 >
 > **Harness 层**：把大目标拆成可持久化、可认领、带依赖关系的小任务。
 
-[s11](../s11_error_recovery/) → **s12** → [s13](../s13_background_tasks/)
+[s09](../s09_memory/) → **s10** → [s11](../s11_background_tasks/)
 
 ---
 
@@ -22,7 +22,7 @@
 
 s05 的 TodoWrite 适合记录当前任务内部的执行步骤，但它没有跨会话磁盘持久化、任务依赖和负责人字段。本章实现的是更高一层的 **Task System**。
 
-| 对比项 | TodoWrite（s05） | Task System（s12） |
+| 对比项 | TodoWrite（s05） | Task System（s10） |
 |---|---|---|
 | 定位 | 当前工作的执行清单 | 可恢复的业务任务图 |
 | 存储 | LangGraph 当前会话状态 | `.tasks/{task_id}.json` |
@@ -202,9 +202,9 @@ in_progress ──complete_task──→ completed
 
 ---
 
-## 相对 s11 的变化
+## 相对已归档的 s11 Error Recovery 的变化
 
-| 组件 | s11 | s12 |
+| 组件 | s11 Error Recovery（归档） | s10 |
 |---|---|---|
 | 重点 | API 错误恢复 | 持久化任务图 |
 | 任务模型 | 无 | `Task` dataclass |
@@ -213,7 +213,7 @@ in_progress ──complete_task──→ completed
 | 任务状态机 | 无 | pending → in_progress → completed |
 | Agent 循环 | `create_agent` / LangGraph | 仍由 `create_agent` / LangGraph 负责 |
 
-为了突出本章机制，代码没有复制 s11 的完整 `ErrorRecoveryMiddleware`。任务持久化和模型错误恢复是独立层：实际项目中可以把本章五个任务工具加入 s11 的 `TOOLS`，两层可以直接组合。
+为了突出本章机制，代码没有复制已归档的 s11 Error Recovery 的完整 `ErrorRecoveryMiddleware`。任务持久化和模型错误恢复是独立层：实际项目中可以把本章五个任务工具加入 legacy/s11_error_recovery 的 `TOOLS`，两层可以直接组合。
 
 ---
 
@@ -263,8 +263,8 @@ BASE_URL=https://your-openai-compatible-endpoint/v1
 运行任一版本：
 
 ```powershell
-python -m s12_task_system.code
-python -m s12_task_system.code_uncommented
+python -m s10_task_system.code
+python -m s10_task_system.code_uncommented
 ```
 
 可以依次尝试：
@@ -289,7 +289,7 @@ python -m s12_task_system.code_uncommented
 - `RLock` 只保护当前 Python 进程，不提供多进程文件锁；
 - 没有高水位 ID 文件；
 - 没有配置 LangGraph checkpointer，对话消息不会跨进程恢复；
-- 没有合并 s11 的完整错误恢复中间件。
+- 没有合并已归档的 s11 Error Recovery 的完整错误恢复中间件。
 
 真实 Claude Code 的任务系统还包含递增 ID、高水位标、双向 `blocks` / `blockedBy`、任务更新、跨进程锁、agent ownership 竞争检查和任务列表监听等机制。
 
@@ -358,5 +358,5 @@ python -m s12_task_system.code_uncommented
 
 ## 接下来
 
-s13 将在任务系统之上增加 Background Tasks：耗时命令不再阻塞 Agent 的模型循环，Agent 可以继续处理其他工作，后台任务完成后再返回结果。
+s11 将在任务系统之上增加 Background Tasks：耗时命令不再阻塞 Agent 的模型循环，Agent 可以继续处理其他工作，后台任务完成后再返回结果。
 

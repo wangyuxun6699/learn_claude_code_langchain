@@ -12,7 +12,7 @@ s14：Cron Scheduler。
 反过来，模型执行较慢也不会阻塞下一次时间检查。持久化只保存任务定义，Python
 进程退出后 daemon 线程不会继续运行。
 
-运行方式：python -m s14_cron_scheduler.code
+运行方式：python -m s12_cron_scheduler.code
 """
 
 from __future__ import annotations
@@ -31,7 +31,7 @@ from langchain.agents.middleware import ModelRequest, dynamic_prompt
 from langchain_core.messages import HumanMessage
 from langchain_core.tools import tool
 
-from s13_background_tasks import code as base
+from s11_background_tasks import code as base
 
 
 # ============================================================
