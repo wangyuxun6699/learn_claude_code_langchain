@@ -7,7 +7,7 @@ s11：错误恢复。
 3. 429/529：读取 Retry-After，执行指数退避；连续 3 次 529 后切备用模型。
 
 create_agent 仍负责标准的“模型 -> 工具 -> 模型”循环，中间件只处理模型调用。
-运行方式：python -m s11_error_recovery.code
+运行方式：python -m legacy.s11_error_recovery.code
 """
 
 from __future__ import annotations

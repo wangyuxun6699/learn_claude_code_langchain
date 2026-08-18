@@ -16,7 +16,7 @@ s10：动态 System Prompt。
 
 dynamic_prompt 中间件会在每次模型节点执行前运行，所以模型调用工具后再次进入模型节点时，
 提示词仍会根据最新工具集合和磁盘记忆重新计算。运行方式：
-python -m s10_system_prompt.code
+python -m legacy.s10_system_prompt.code
 """
 
 from __future__ import annotations

@@ -1,7 +1,7 @@
 """
 s16：Team Protocols —— 固定格式的 request-response 团队握手协议。
 
-s15 用 assign_teammate / report_to_lead 做一次性控制权交接；s16 在其上叠加一层
+s13 用 assign_teammate / report_to_lead 做一次性控制权交接；s16 在其上叠加一层
 结构化协议（spawn 本身几乎不变）：
 
     Lead                                              Teammate
@@ -24,9 +24,9 @@ s15 用 assign_teammate / report_to_lead 做一次性控制权交接；s16 在�
   控制权走 LangGraph Command。
 - 收件箱在每次模型调用前由 ProtocolInboxMiddleware 注入，等价于参考主循环的
   "Check inbox for protocol messages (shutdown_request, etc)"。
-- 消息用结构化 JSON，不再用 s15 的 XML 标签。
+- 消息用结构化 JSON，不再用 s13 的 XML 标签。
 
-运行方式：python -m s16_team_protocols.code
+运行方式：python -m legacy.s16_team_protocols.code
 """
 
 from __future__ import annotations
@@ -54,11 +54,11 @@ from langgraph.graph.message import add_messages
 from langgraph.prebuilt import InjectedState
 from langgraph.types import Command
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from s13_background_tasks import code as base
+from s11_background_tasks import code as base
 
 MODEL = base.model
 WORKDIR = base.WORKDIR
@@ -152,7 +152,7 @@ class ProtocolInboxMiddleware(AgentMiddleware):
     """
     等价于参考主循环的"检查收件箱 (shutdown_request 等)"：
     每次模型调用前把当前 agent 收件箱里的协议信封注入为 HumanMessage。
-    与 s13 的 BackgroundNotificationMiddleware 同构。
+    与 s11 的 BackgroundNotificationMiddleware 同构。
     """
 
     def __init__(self,kind: str) -> None:
@@ -180,7 +180,7 @@ lead_inbox = ProtocolInboxMiddleware("lead")
 teammate_inbox = ProtocolInboxMiddleware("teammate")
 
 # ============================================================
-# 4. 工具调用追踪（与 s15 一致）
+# 4. 工具调用追踪（与 s13 一致）
 # ============================================================
 
 def _json_text(value:Any) -> str:

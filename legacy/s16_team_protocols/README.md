@@ -1,12 +1,12 @@
 # s16: Team Protocols — 用请求-响应协议协调队友
 
-[s15](../s15_agent_teams/) → **s16** → [s17](../s17_autonomous_agents/)
+[s13: Agent Teams](../../s13_agent_teams/) → **s16** → [s17](../s17_autonomous_agents/)
 
-> 队友之间要有约定。在 s15 的 handoff 之上，给队友通信加一层结构化协议：把“谁发请求、谁回响应、怎么关联、怎么优雅关机”固化成一套固定格式。
+> 队友之间要有约定。在 s13 的 handoff 之上，给队友通信加一层结构化协议：把“谁发请求、谁回响应、怎么关联、怎么优雅关机”固化成一套固定格式。
 
-本章参考 [`shareAI-lab/learn-claude-code/s16_team_protocols`](https://github.com/shareAI-lab/learn-claude-code/tree/main/s16_team_protocols)，使用本项目锁定的 **LangChain 1.3.11 + LangGraph 1.2.7** 重新实现团队协议的核心概念。
+本章参考 [`shareAI-lab/learn-claude-code/s13_agent_teams`](https://github.com/shareAI-lab/learn-claude-code/tree/main/s13_agent_teams)，使用本项目锁定的 **LangChain 1.3.11 + LangGraph 1.2.7** 重新实现团队协议的核心概念。
 
-参考仓库用“队友线程 + 文件收件箱（`INBOX_DIR/<name>`）”模拟真实 Claude Code 的异步团队协议；本章沿用 s15 已经搭好的 LangGraph 路线：Lead 与 Teammate 仍是两个 `create_agent` 子图，控制权仍由 `Command` 在父图里路由，但**消息不再直接写进共享历史，而是投递到每个 Agent 的收件箱**，收件箱再由 middleware 在每次模型调用前注入上下文。
+参考仓库用“队友线程 + 文件收件箱（`INBOX_DIR/<name>`）”模拟真实 Claude Code 的异步团队协议；本章沿用 s13 已经搭好的 LangGraph 路线：Lead 与 Teammate 仍是两个 `create_agent` 子图，控制权仍由 `Command` 在父图里路由，但**消息不再直接写进共享历史，而是投递到每个 Agent 的收件箱**，收件箱再由 middleware 在每次模型调用前注入上下文。
 
 | 维度 | 参考仓库 | 本章实现 |
 |---|---|---|
@@ -217,7 +217,7 @@ Teammate 没有 `assign_teammate`（不能递归创建队友），也没有共�
 
 ```sh
 cd learn-claude-code
-python -m s16_team_protocols.code
+python -m legacy.s16_team_protocols.code
 ```
 
 试试这些 prompt：
@@ -291,14 +291,14 @@ Copy-Item .env.example .env
 运行任一版本：
 
 ```powershell
-python -m s16_team_protocols.code
-python -m s16_team_protocols.code_uncommented
+python -m legacy.s16_team_protocols.code
+python -m legacy.s16_team_protocols.code_uncommented
 ```
 
 也支持直接运行文件：
 
 ```powershell
-python s16_team_protocols/code.py
+python legacy/s16_team_protocols/code.py
 ```
 
 ## 验证代码结构
@@ -306,17 +306,17 @@ python s16_team_protocols/code.py
 不调用模型也可以先做静态验证：
 
 ```powershell
-python -m py_compile s16_team_protocols/code.py
-python -m py_compile s16_team_protocols/code_uncommented.py
+python -m py_compile legacy/s16_team_protocols/code.py
+python -m py_compile legacy/s16_team_protocols/code_uncommented.py
 
-python -c "import s16_team_protocols.code as c; print(type(c.team_graph).__name__)"
+python -c "import legacy.s16_team_protocols.code as c; print(type(c.team_graph).__name__)"
 ```
 
 预期最后输出 `CompiledStateGraph`。
 
 ## 参考资料
 
-- [参考仓库 s16：Team Protocols](https://github.com/shareAI-lab/learn-claude-code/tree/main/s16_team_protocols)
+- [参考仓库 s13：Agent Teams（团队协议已并入该章）](https://github.com/shareAI-lab/learn-claude-code/tree/main/s13_agent_teams)
 - [LangChain 官方文档：Multi-agent patterns](https://docs.langchain.com/oss/python/langchain/multi-agent)
 - [LangChain 官方文档：Handoffs](https://docs.langchain.com/oss/python/langchain/multi-agent/handoffs)
 - [LangChain 官方文档：Middleware](https://docs.langchain.com/oss/python/langchain/middleware/overview)

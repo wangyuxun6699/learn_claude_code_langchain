@@ -4,7 +4,7 @@
 >
 > **Harness 层**：韧性 — 分类错误、退避重试、降级模型与上下文恢复。
 
-[s10](../s10_system_prompt/) → **s11** → [s12](../s12_task_system/)
+[s10](../s10_system_prompt/) → **s11** → [s10: Task System](../../s10_task_system/)
 
 ---
 
@@ -553,13 +553,13 @@ python -m venv venv
 .\venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 Copy-Item .env.example .env
-python -m s11_error_recovery.code
+python -m legacy.s11_error_recovery.code
 ```
 
 也可以直接运行无注释版：
 
 ```powershell
-python -m s11_error_recovery.code_uncommented
+python -m legacy.s11_error_recovery.code_uncommented
 ```
 
 > 这些教学 Agent 可以执行命令和修改文件。建议先在测试目录中试用，并认真阅读每次权限提示。

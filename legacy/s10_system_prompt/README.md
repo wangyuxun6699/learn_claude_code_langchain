@@ -4,7 +4,7 @@
 >
 > **Harness 层**：提示词架构——分段、运行时上下文、条件启用、中间件与缓存。
 
-[s09](../s09_memory/) → **s10** → [s11](../s11_error_recovery/)
+[s09](../../s09_memory/) → **s10** → [s11](../s11_error_recovery/)
 
 ---
 
@@ -584,8 +584,8 @@ Copy-Item .env.example .env
 运行任一版本：
 
 ```powershell
-python -m s10_system_prompt.code
-python -m s10_system_prompt.code_uncommented
+python -m legacy.s10_system_prompt.code
+python -m legacy.s10_system_prompt.code_uncommented
 ```
 
 ### 实验一：观察首次组装与缓存命中

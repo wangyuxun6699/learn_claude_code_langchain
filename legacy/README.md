@@ -43,4 +43,4 @@
 
 ## 注意
 
-本目录下的章节仍是旧 20 章编号，其内部 `python -m sXX_*` 命令、章节导航链接和跨章节 import（例如 `from s13_background_tasks import code`）仍指向旧编号，直接运行可能失败。它们只是存档，不作为当前主线的一部分。
+本目录下的章节仍是旧 20 章编号，但内部引用已修正为可用状态：跨章节 import 改为 `from s11_background_tasks import code`，运行命令使用 `python -m legacy.sXX_*`，导航链接指向当前实际位置。已实现章节（s10、s11、s16）可直接运行，s17、s18 仍是空占位。它们只是存档，不作为当前主线的一部分。
