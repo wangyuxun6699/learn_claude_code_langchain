@@ -1,24 +1,10 @@
-"""s17: Goal Loop -- 模型提出停止，独立评估器决定是否继续。
-
-s01 以来，agent 循环只有一个退出条件：模型不再调用工具就返回。
-
-这对普通对话够用，但对"一直修到测试全过""做完每一条验收标准"这类任务不够：
-模型可能只做了一半就以为完工。没有新的 tool_use 只说明**这一轮**想停，并不证明**整个目标**达成。
-
-/goal 在真正返回前加一个独立判断：
-1. /goal 保存一个"完成条件"，并立刻把它作为当前任务交给主模型（无需再发一条"开始干活"）。
-2. 主模型停止调用工具后，循环在返回边界跑 Goal Stop hook：让一个**没有工具、只读对话**的评估器
-   判断条件是否已被对话里的具体结果满足。
-3. 不满足 -> 把评估器给的简短理由追加回 messages，continue 再跑一轮；满足 -> 返回；不可能 -> 交还用户。
-
-这是建立在 s04 内核（五个基础工具 + Hook + 权限）之上的独立机制示例。
-"""
-
+"""s17: Goal Loop -- the model stops, an independent evaluator decides (uncommented)."""
 import os
 import sys
 import re
 import json
 import time
+import subprocess
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -31,39 +17,25 @@ load_dotenv(override=True)
 MODEL_ID = os.getenv("MODEL_ID")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 OPENAI_BASE_URL = os.getenv("BASE_URL")
-# 评估器可以用更小的模型；未设置时复用 MODEL_ID。
 GOAL_EVALUATOR_MODEL_ID = os.getenv("GOAL_EVALUATOR_MODEL_ID") or MODEL_ID
-# 自动延续的两道出口：全局轮数上限 + 连续 Stop-hook 阻塞上限。
 MAX_TURNS = int(os.getenv("MAX_TURNS", "20"))
 MAX_BLOCKS = int(os.getenv("MAX_BLOCKS", "5"))
-
 WORKDIR = Path.cwd()
 
 
-def build_model(model_id: str | None = None) -> ChatOpenAI:
-    return ChatOpenAI(
-        model=model_id or MODEL_ID,
-        max_completion_tokens=8000,
-        temperature=0,
-        api_key=OPENAI_API_KEY,
-        base_url=OPENAI_BASE_URL,
-    )
+def build_model(model_id=None) -> ChatOpenAI:
+    return ChatOpenAI(model=model_id or MODEL_ID, max_completion_tokens=8000, temperature=0,
+                      api_key=OPENAI_API_KEY, base_url=OPENAI_BASE_URL)
 
 
 WORKER_MODEL = build_model()
 EVALUATOR_MODEL = build_model(GOAL_EVALUATOR_MODEL_ID)
 
-# 主模型的 system prompt：验证命令的结果要报得足够清楚，供独立评估器检查。
 SYSTEM = (
     f"you are a coding agent at {WORKDIR}. Use tools to solve tasks. "
     "After running a verification command, report the command and its result clearly "
     "enough for an independent evaluator to inspect. Act, don't explain."
 )
-
-
-# ---------------------------------------------------------------------------
-# 权限与 Hook（s04 内核）
-# ---------------------------------------------------------------------------
 
 HOOKS = {"UserPromptSubmit": [], "PreToolUse": [], "PostToolUse": [], "Stop": []}
 
@@ -138,24 +110,15 @@ register_hook("PostToolUse", lambda n, a, r: print("[PostToolUse]", n))
 register_hook("Stop", lambda msgs: print("[Stop]", len(msgs)))
 
 
-# ---------------------------------------------------------------------------
-# 基础工具（s04 内核）
-# ---------------------------------------------------------------------------
-
 @tool
 def run_bash(command: str) -> str:
     """Execute a shell command in the current workspace."""
     try:
-        r = subprocess_run(command)
+        r = subprocess.run(command, shell=True, cwd=WORKDIR, capture_output=True, text=True, timeout=120)
         out = (r.stdout + r.stderr).strip()
         return out[:50000] if out else "(no output)"
     except Exception as e:
         return f"Error: {e}"
-
-
-def subprocess_run(command: str):
-    import subprocess
-    return subprocess.run(command, shell=True, cwd=WORKDIR, capture_output=True, text=True, timeout=120)
 
 
 @tool
@@ -214,51 +177,40 @@ TOOLS = [run_bash, run_read, run_write, run_edit, run_glob]
 TOOL_MAP = {t.name: t for t in TOOLS}
 
 
-# ---------------------------------------------------------------------------
-# GoalState / PromptGoalEvaluator / GoalController
-# ---------------------------------------------------------------------------
-
 class GoalState:
     def __init__(self):
-        self.condition: str | None = None
-        self.started_at: float | None = None
-        self.evaluations: int = 0
-        self.last_reason: str | None = None
-        self.blocks: int = 0
-        self.phase: str | None = None  # None | "complete" | "impossible"
+        self.condition = None
+        self.started_at = None
+        self.evaluations = 0
+        self.last_reason = None
+        self.blocks = 0
+        self.phase = None
 
 
 class PromptGoalEvaluator:
-    """用一次独立模型调用判断完成条件，不持有任何工具。"""
-
     SYSTEM = (
         "You are a goal evaluator. Judge whether the goal condition is satisfied by the "
         "conversation below. Return ONLY a JSON object with keys ok (bool), reason (string), "
         "impossible (bool). ok=true means concrete results already present in the conversation "
-        "prove the condition (exit codes, command output, etc). Do NOT assume an unreported "
-        "command succeeded. Set impossible=true only if the goal can no longer be achieved."
+        "prove the condition. Do NOT assume an unreported command succeeded. Set impossible=true "
+        "only if the goal can no longer be achieved."
     )
 
-    def evaluate(self, condition: str, messages: list) -> dict:
-        trimmed = self._trim(messages)
-        conversation = self._render(trimmed)
+    def evaluate(self, condition, messages):
+        conversation = self._render(self._trim(messages))
         try:
             response = EVALUATOR_MODEL.invoke([
                 SystemMessage(content=self.SYSTEM),
                 HumanMessage(content=f"Goal condition:\n{condition}\n\nConversation:\n{conversation}"),
             ])
             data = self._parse_json(response.content)
-            return {
-                "ok": bool(data.get("ok")),
-                "reason": str(data.get("reason", "")),
-                "impossible": bool(data.get("impossible")),
-            }
+            return {"ok": bool(data.get("ok")), "reason": str(data.get("reason", "")),
+                    "impossible": bool(data.get("impossible"))}
         except Exception as e:
-            # 评估器自己出错：停止自动延续，保留 goal，把错误交给用户，而不是假装成功。
             return {"ok": False, "reason": f"evaluator error: {e}", "impossible": False, "error": True}
 
     @staticmethod
-    def _render(messages: list) -> str:
+    def _render(messages):
         lines = []
         for m in messages:
             role = m.__class__.__name__.replace("Message", "").lower()
@@ -268,14 +220,12 @@ class PromptGoalEvaluator:
         return "\n".join(lines)
 
     @staticmethod
-    def _trim(messages: list, max_chars: int = 12000) -> list:
-        # 保留最近的完整消息；最新一条若过大，只留首尾，避免一个工具结果塞满评估请求。
+    def _trim(messages, max_chars=12000):
         if not messages:
             return []
         total = sum(len(str(getattr(m, "content", ""))) for m in messages)
         if total <= max_chars:
             return messages
-        # 从后往前保留，直到预算用尽；最新一条超大时截首尾。
         kept = []
         budget = max_chars
         last = messages[-1]
@@ -298,7 +248,7 @@ class PromptGoalEvaluator:
         return kept
 
     @staticmethod
-    def _parse_json(raw) -> dict:
+    def _parse_json(raw):
         text = str(raw).strip()
         match = re.search(r"\{.*\}", text, re.DOTALL)
         if match:
@@ -311,64 +261,50 @@ class GoalController:
         self.goal = GoalState()
         self.evaluator = PromptGoalEvaluator()
 
-    def set(self, condition: str) -> str:
-        self.goal.condition = condition
-        self.goal.started_at = time.time()
-        self.goal.evaluations = 0
-        self.goal.last_reason = None
-        self.goal.blocks = 0
-        self.goal.phase = None
+    def set(self, condition):
+        g = self.goal
+        g.condition = condition
+        g.started_at = time.time()
+        g.evaluations = 0
+        g.last_reason = None
+        g.blocks = 0
+        g.phase = None
         return f"goal set: {condition}"
 
-    def clear(self) -> str:
+    def clear(self):
         self.goal = GoalState()
         return "goal cleared"
 
-    def status(self) -> str:
+    def status(self):
         g = self.goal
         if not g.condition:
             return "no active goal"
         elapsed = int(time.time() - (g.started_at or time.time()))
-        return (
-            f"goal: {g.condition}\n"
-            f"elapsed: {elapsed}s, evaluations: {g.evaluations}, blocks: {g.blocks}\n"
-            f"last reason: {g.last_reason or '(none)'}\n"
-            f"phase: {g.phase or 'active'}"
-        )
+        return (f"goal: {g.condition}\nelapsed: {elapsed}s, evaluations: {g.evaluations}, "
+                f"blocks: {g.blocks}\nlast reason: {g.last_reason or '(none)'}\nphase: {g.phase or 'active'}")
 
-    def evaluate_after_turn(self, messages: list) -> dict:
-        """Goal Stop hook：在循环返回边界判断。返回 {action, reason}。"""
-        if not self.goal.condition or self.goal.phase:
-            # 无 goal（或已 complete/impossible）-> 放行，停止。
+    def evaluate_after_turn(self, messages):
+        g = self.goal
+        if not g.condition or g.phase:
             return {"action": "allow", "reason": ""}
-
-        self.goal.evaluations += 1
-        result = self.evaluator.evaluate(self.goal.condition, messages)
-
+        g.evaluations += 1
+        result = self.evaluator.evaluate(g.condition, messages)
         if result.get("error"):
             return {"action": "error", "reason": result["reason"]}
-
         if result["impossible"]:
-            self.goal.phase = "impossible"
-            self.goal.last_reason = result["reason"]
+            g.phase = "impossible"
+            g.last_reason = result["reason"]
             return {"action": "impossible", "reason": result["reason"]}
-
         if result["ok"]:
-            self.goal.phase = "complete"
-            self.goal.last_reason = result["reason"] or "goal satisfied"
-            return {"action": "allow", "reason": self.goal.last_reason}
-
-        # 未满足 -> 阻塞返回，再跑一轮。
-        self.goal.blocks += 1
-        self.goal.last_reason = result["reason"] or "condition not yet satisfied"
-        return {"action": "block", "reason": self.goal.last_reason}
+            g.phase = "complete"
+            g.last_reason = result["reason"] or "goal satisfied"
+            return {"action": "allow", "reason": g.last_reason}
+        g.blocks += 1
+        g.last_reason = result["reason"] or "condition not yet satisfied"
+        return {"action": "block", "reason": g.last_reason}
 
 
-# ---------------------------------------------------------------------------
-# 主循环：s04 内核 + Goal Stop hook
-# ---------------------------------------------------------------------------
-
-def execute_tool_calls(response: AIMessage) -> list:
+def execute_tool_calls(response):
     outputs = []
     for tool_call in response.tool_calls:
         name = tool_call["name"]
@@ -391,48 +327,7 @@ def execute_tool_calls(response: AIMessage) -> list:
     return outputs
 
 
-def run_with_goal(messages: list, controller: GoalController) -> dict:
-    """手动 while 循环：模型停止工具调用后，由 Goal Stop hook 决定是否再来一轮。"""
-    if messages:
-        trigger_hooks("UserPromptSubmit", getattr(messages[-1], "content", messages[-1]))
-
-    llm = WORKER_MODEL.bind_tools(TOOLS)
-    turns = 0
-
-    while turns < MAX_TURNS:
-        turns += 1
-        response = llm.invoke([SystemMessage(content=SYSTEM)] + messages)
-        messages.append(response)
-
-        if response.tool_calls:
-            messages.extend(execute_tool_calls(response))
-            continue
-
-        # 模型本轮不再调用工具 -> 返回边界 -> Goal Stop hook。
-        decision = controller.evaluate_after_turn(messages)
-
-        if decision["action"] == "block":
-            if controller.goal.blocks > MAX_BLOCKS:
-                return {"status": "max_blocks", "text": final_text(response),
-                        "reason": f"exceeded {MAX_BLOCKS} consecutive stop blocks"}
-            messages.append(HumanMessage(content=decision["reason"]))
-            continue
-
-        if decision["action"] == "allow":
-            trigger_hooks("Stop", messages)
-            return {"status": controller.goal.phase or "completed",
-                    "text": final_text(response), "reason": decision["reason"]}
-
-        if decision["action"] == "impossible":
-            return {"status": "impossible", "text": final_text(response), "reason": decision["reason"]}
-
-        if decision["action"] == "error":
-            return {"status": "error", "text": final_text(response), "reason": decision["reason"]}
-
-    return {"status": "max_turns", "text": "(turn limit reached)", "reason": f"exceeded {MAX_TURNS} turns"}
-
-
-def final_text(response: AIMessage) -> str:
+def final_text(response):
     content = response.content
     if isinstance(content, str):
         return content
@@ -441,15 +336,40 @@ def final_text(response: AIMessage) -> str:
     return str(content)
 
 
-# ---------------------------------------------------------------------------
-# /goal 命令解析与 CLI
-# ---------------------------------------------------------------------------
+def run_with_goal(messages, controller):
+    if messages:
+        trigger_hooks("UserPromptSubmit", getattr(messages[-1], "content", messages[-1]))
+    llm = WORKER_MODEL.bind_tools(TOOLS)
+    turns = 0
+    while turns < MAX_TURNS:
+        turns += 1
+        response = llm.invoke([SystemMessage(content=SYSTEM)] + messages)
+        messages.append(response)
+        if response.tool_calls:
+            messages.extend(execute_tool_calls(response))
+            continue
+        decision = controller.evaluate_after_turn(messages)
+        if decision["action"] == "block":
+            if controller.goal.blocks > MAX_BLOCKS:
+                return {"status": "max_blocks", "text": final_text(response),
+                        "reason": f"exceeded {MAX_BLOCKS} consecutive stop blocks"}
+            messages.append(HumanMessage(content=decision["reason"]))
+            continue
+        if decision["action"] == "allow":
+            trigger_hooks("Stop", messages)
+            return {"status": controller.goal.phase or "completed", "text": final_text(response),
+                    "reason": decision["reason"]}
+        if decision["action"] == "impossible":
+            return {"status": "impossible", "text": final_text(response), "reason": decision["reason"]}
+        if decision["action"] == "error":
+            return {"status": "error", "text": final_text(response), "reason": decision["reason"]}
+    return {"status": "max_turns", "text": "(turn limit reached)", "reason": f"exceeded {MAX_TURNS} turns"}
+
 
 CLEAR_ALIASES = {"clear", "stop", "off", "reset", "none", "cancel"}
 
 
-def handle_goal_command(query: str, controller: GoalController) -> str:
-    """解析 /goal 命令；返回 controller 状态文字或 "set" 表示已设置需要启动工作。"""
+def handle_goal_command(query, controller):
     rest = query.strip()[len("/goal"):].strip()
     if not rest:
         print(controller.status())
@@ -461,10 +381,16 @@ def handle_goal_command(query: str, controller: GoalController) -> str:
     return "set"
 
 
-def run_once(initial: str | None = None):
+def print_status(result):
+    print(f"\n[status={result['status']}] {result['text']}")
+    if result.get("reason"):
+        print(f"[reason] {result['reason']}")
+    print()
+
+
+def run_once(initial=None):
     controller = GoalController()
     history = []
-
     if initial and initial.strip().startswith("/goal") and initial.strip()[len("/goal"):].strip():
         condition = initial.strip()[len("/goal"):].strip()
         if condition.lower() in CLEAR_ALIASES:
@@ -472,13 +398,11 @@ def run_once(initial: str | None = None):
             return
         controller.set(condition)
         history.append(HumanMessage(content=condition))
-        result = run_with_goal(history, controller)
-        print_status(result)
+        print_status(run_with_goal(history, controller))
         return
 
     print("s17: Goal Loop")
     print("输入 /goal <条件> 设定目标并开始；/goal 查看状态；/goal clear 清除；q 退出。\n")
-
     while True:
         try:
             query = input("\033[36ms17 >> \033[0m")
@@ -486,26 +410,14 @@ def run_once(initial: str | None = None):
             break
         if query.strip().lower() in ("q", "exit", ""):
             break
-
         if query.strip().startswith("/goal"):
             action = handle_goal_command(query, controller)
             if action == "set":
-                condition = controller.goal.condition
-                history.append(HumanMessage(content=condition))
-                result = run_with_goal(history, controller)
-                print_status(result)
+                history.append(HumanMessage(content=controller.goal.condition))
+                print_status(run_with_goal(history, controller))
             continue
-
         history.append(HumanMessage(content=query))
-        result = run_with_goal(history, controller)
-        print_status(result)
-
-
-def print_status(result: dict):
-    print(f"\n[status={result['status']}] {result['text']}")
-    if result.get("reason"):
-        print(f"[reason] {result['reason']}")
-    print()
+        print_status(run_with_goal(history, controller))
 
 
 if __name__ == "__main__":

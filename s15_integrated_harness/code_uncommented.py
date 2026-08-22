@@ -1,29 +1,14 @@
-"""s15: Integrated Harness -- 很多机制，一个循环。
-
-本章不再引入某个孤立的新机制，而是把前面章节的机制挂回同一条循环上：
-基础工具 + Hook + 权限 + todo + skill + 记忆 + 一次性子 agent + 后台 bash + cron + MCP，
-外加 system prompt 动态组装、上下文压缩和错误恢复。
-
-因为要在运行时注入后台/定时通知、动态组装 MCP 工具，主循环仍然是手写的
-（同 s14），用 MODEL.bind_tools(assemble_tool_pool()) 每次取当前工具。
-一次性子 agent（task 工具）则复用 create_agent，体现“隔离上下文”的委托。
-"""
-
-# functools：MCP 动态工具签名复制；threading/time/queue：后台与定时任务。
+"""s15: Integrated Harness -- many mechanisms, one loop (uncommented)."""
 import functools
 import re
 import threading
 import time
 import queue
-import json
-
-# Callable / Any 做类型标注。
 from collections.abc import Callable
 from typing import Any
-
-# Path 处理路径；os/subprocess 执行命令。
 from pathlib import Path
-import os, subprocess
+import os
+import subprocess
 
 from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
@@ -41,44 +26,26 @@ MEMORY_DIR = WORKDIR / ".memory"
 
 
 def build_chat_model() -> ChatOpenAI:
-    return ChatOpenAI(
-        model=MODEL_ID,
-        max_completion_tokens=8000,
-        temperature=0,
-        api_key=OPENAI_API_KEY,
-        base_url=OPENAI_BASE_URL,
-    )
+    return ChatOpenAI(model=MODEL_ID, max_completion_tokens=8000, temperature=0,
+                      api_key=OPENAI_API_KEY, base_url=OPENAI_BASE_URL)
 
 
 MODEL = build_chat_model()
 
-# ---------------------------------------------------------------------------
-# Hook 系统（s04）
-# ---------------------------------------------------------------------------
-
-HOOKS = {
-    "UserPromptSubmit": [],
-    "PreToolUse": [],
-    "PostToolUse": [],
-    "Stop": [],
-}
+HOOKS = {"UserPromptSubmit": [], "PreToolUse": [], "PostToolUse": [], "Stop": []}
 
 
-def register_hook(event: str, callback):
+def register_hook(event, callback):
     HOOKS[event].append(callback)
 
 
-def trigger_hooks(event: str, *args):
+def trigger_hooks(event, *args):
     for callback in HOOKS[event]:
         result = callback(*args)
         if result is not None:
             return result
     return None
 
-
-# ---------------------------------------------------------------------------
-# 权限（s04 + MCP 主机策略）
-# ---------------------------------------------------------------------------
 
 dangerous = ["rm -rf /", "sudo", "shutdown", "reboot", "mkfs", "dd if=", "> /dev/sda"]
 
@@ -103,8 +70,7 @@ def check_rules(tool_name: str, args: dict) -> str | None:
         if command.strip().lower().startswith("del ") or any(kw in command for kw in ["rm ", "> /etc/", "chmod 777"]):
             return "potentially destructive command"
     if tool_name in ("run_write", "run_edit", "run_read"):
-        path = args.get("path", "")
-        if not resolve_path(path).is_relative_to(WORKDIR):
+        if not resolve_path(args.get("path", "")).is_relative_to(WORKDIR):
             return "Working outside workspace"
     return None
 
@@ -112,8 +78,7 @@ def check_rules(tool_name: str, args: dict) -> str | None:
 def ask_user(tool_name: str, args: dict, reason: str) -> bool:
     print(f"\nWarning: {reason}")
     print(f"Tool: {tool_name}({args})")
-    choice = input("Allow? [y/N] ").strip().lower()
-    return choice in ("y", "yes")
+    return input("Allow? [y/N] ").strip().lower() in ("y", "yes")
 
 
 MCP_HOST_POLICY = {
@@ -154,19 +119,11 @@ def on_pre_tool_use(tool_name, tool_args):
         return "Permission denied"
 
 
-def on_post_tool_use(tool_name, tool_args, result):
-    print("[PostToolUse]", tool_name)
-
-
 register_hook("UserPromptSubmit", lambda c: print("[UserPromptSubmit]", c))
 register_hook("PreToolUse", on_pre_tool_use)
-register_hook("PostToolUse", on_post_tool_use)
+register_hook("PostToolUse", lambda n, a, r: print("[PostToolUse]", n))
 register_hook("Stop", lambda msgs: print("[Stop]", len(msgs)))
 
-
-# ---------------------------------------------------------------------------
-# 基础工具（s04）
-# ---------------------------------------------------------------------------
 
 @tool
 def run_bash(command: str, run_in_background: bool = False) -> str:
@@ -235,12 +192,7 @@ def run_glob(pattern: str) -> str:
         return f"Error: {e}"
 
 
-# ---------------------------------------------------------------------------
-# 计划（s05 todo_write 的轻量版）
-# ---------------------------------------------------------------------------
-
-# 当前会话的待办列表，元素形如 {"content": str, "status": str}。
-TODO: list[dict] = []
+TODO: list = []
 
 
 @tool
@@ -249,32 +201,18 @@ def todo_write(todos: list) -> str:
     global TODO
     if not isinstance(todos, list):
         return "Error: todos must be a list of {content, status}"
-    cleaned = []
-    for item in todos:
-        if isinstance(item, dict) and "content" in item:
-            cleaned.append({"content": item["content"], "status": item.get("status", "pending")})
-    TODO = cleaned
+    TODO = [{"content": i["content"], "status": i.get("status", "pending")}
+            for i in todos if isinstance(i, dict) and "content" in i]
     return f"todo updated: {len(TODO)} item(s)"
 
 
-# ---------------------------------------------------------------------------
-# Skills（s07 的按需加载）
-# ---------------------------------------------------------------------------
-
 def _parse_skill(path: Path) -> tuple[str, str]:
-    """解析一个 SKILL.md：返回 (name, description)。
-
-    Skill 的 frontmatter 格式为 --- 开头，里面有 name: 和 description: 字段。
-    description 可能是一行，也可能是 | 多行块；多行块只取第一行作为目录摘要。
-    """
     name = path.parent.name
     desc = ""
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
     except Exception:
         return name, desc
-
-    # 定位 frontmatter（首行是 --- 时，切出中间的名字段和后面的正文）。
     if lines and lines[0].strip() == "---":
         end = 1
         while end < len(lines) and lines[end].strip() != "---":
@@ -282,7 +220,6 @@ def _parse_skill(path: Path) -> tuple[str, str]:
         fm, after = lines[1:end], lines[end + 1:]
     else:
         fm, after = [], lines
-
     in_multiline_desc = False
     for ln in fm:
         s = ln.strip()
@@ -291,15 +228,12 @@ def _parse_skill(path: Path) -> tuple[str, str]:
         elif s.startswith("description:"):
             rest = s[len("description:"):].strip()
             if rest == "|":
-                # 多行块：后续缩进的正文行由下面统一兜底。
                 in_multiline_desc = True
             elif rest:
                 desc = rest
         elif in_multiline_desc and s and not s.startswith("name:") and not desc:
             desc = s
-
     if not desc:
-        # description 缺失时，取正文里第一个非标题行作为摘要。
         for ln in after:
             s = ln.strip()
             if s and not s.startswith("#"):
@@ -309,7 +243,6 @@ def _parse_skill(path: Path) -> tuple[str, str]:
 
 
 def skills_catalog() -> str:
-    """扫描 skills/*/SKILL.md，只把目录（名称 + 摘要）放进目录，内容按需再加载。"""
     entries = []
     for p in sorted(Path("skills").glob("*/SKILL.md")):
         name, desc = _parse_skill(p)
@@ -331,12 +264,7 @@ def load_skill(name: str) -> str:
         return f"Error: {e}"
 
 
-# ---------------------------------------------------------------------------
-# 记忆（s09 的目录读取 + 简单相关性选择）
-# ---------------------------------------------------------------------------
-
 def memory_section(query_text: str = "") -> str:
-    """把 .memory/MEMORY.md 里相关的记录注入 system prompt。"""
     mem_file = MEMORY_DIR / "MEMORY.md"
     if not mem_file.exists():
         return "Long-term memory: (empty)"
@@ -344,7 +272,6 @@ def memory_section(query_text: str = "") -> str:
         lines = mem_file.read_text(encoding="utf-8").splitlines()
     except Exception:
         return "Long-term memory: (unreadable)"
-
     if query_text:
         kws = [w for w in query_text.lower().split() if len(w) > 3]
         relevant = [ln for ln in lines if kws and any(k in ln.lower() for k in kws)]
@@ -354,39 +281,26 @@ def memory_section(query_text: str = "") -> str:
     return "Long-term memory (relevant):\n" + "\n".join(selected[:50])
 
 
-# ---------------------------------------------------------------------------
-# 一次性子 agent（s06 的隔离上下文委托）
-# ---------------------------------------------------------------------------
-
 @tool
 def task(prompt: str) -> str:
     """Dispatch an isolated one-shot subagent that investigates and returns only a final summary."""
     sub = create_agent(
         model=build_chat_model(),
         tools=[run_read, run_glob],
-        system_prompt=(
-            "You are a focused subagent. Investigate the workspace with read/glob, "
-            "then return a concise summary of your findings. Do not ask questions."
-        ),
+        system_prompt="You are a focused subagent. Investigate the workspace with read/glob, then return a concise summary.",
     )
     try:
         result = sub.invoke({"messages": [HumanMessage(content=prompt)]})
-        last = result["messages"][-1]
-        return str(getattr(last, "content", last))
+        return str(getattr(result["messages"][-1], "content", result["messages"][-1]))
     except Exception as e:
         return f"subagent error: {e}"
 
 
-# ---------------------------------------------------------------------------
-# 后台 bash（s11 的后台执行 + 完成通知）
-# ---------------------------------------------------------------------------
-
-BACKGROUND_RESULTS: "queue.Queue[str]" = queue.Queue()
+BACKGROUND_RESULTS = queue.Queue()
 BG_COUNTER = [0]
 
 
 def start_background_task(command: str) -> str:
-    """在守护线程里跑命令；完成后把 <task_notification> 放进队列，由循环注入。"""
     BG_COUNTER[0] += 1
     task_id = BG_COUNTER[0]
 
@@ -398,21 +312,15 @@ def start_background_task(command: str) -> str:
         except Exception as e:
             out = f"Error: {e}"
             status = "failed"
-        BACKGROUND_RESULTS.put(
-            f"<task_notification>[background #{task_id}] {status}:\n{out[:4000]}</task_notification>"
-        )
+        BACKGROUND_RESULTS.put(f"<task_notification>[background #{task_id}] {status}:\n{out[:4000]}</task_notification>")
 
     threading.Thread(target=worker, daemon=True).start()
     return f"started background task #{task_id}; its result will arrive as a notification"
 
 
-# ---------------------------------------------------------------------------
-# Cron（s12 的定时触发，简化版：一次性相对延迟）
-# ---------------------------------------------------------------------------
-
-CRON_JOBS: list[dict] = []
+CRON_JOBS: list = []
 CRON_COUNTER = [0]
-CRON_QUEUE: "queue.Queue[str]" = queue.Queue()
+CRON_QUEUE = queue.Queue()
 
 
 @tool
@@ -430,10 +338,7 @@ def list_crons() -> str:
     if not CRON_JOBS:
         return "(no cron jobs)"
     now = time.time()
-    return "\n".join(
-        f"#{j['id']} due_in={int(j['due'] - now)}s delivered={j['delivered']} {j['prompt']}"
-        for j in CRON_JOBS
-    )
+    return "\n".join(f"#{j['id']} due_in={int(j['due'] - now)}s delivered={j['delivered']} {j['prompt']}" for j in CRON_JOBS)
 
 
 @tool
@@ -448,7 +353,6 @@ def cancel_cron(job_id: int) -> str:
 
 
 def cron_worker():
-    """守护线程，每秒扫描一次到期任务，把 prompt 放进 CRON_QUEUE。"""
     while True:
         time.sleep(1)
         now = time.time()
@@ -460,10 +364,6 @@ def cron_worker():
 
 threading.Thread(target=cron_worker, daemon=True).start()
 
-
-# ---------------------------------------------------------------------------
-# MCP（s14 的动态工具，内联到本集成章）
-# ---------------------------------------------------------------------------
 
 def normalize_mcp_name(name: str) -> str:
     return re.sub(r"[^a-zA-Z0-9_.-]", "_", name)
@@ -494,18 +394,15 @@ def docs_server() -> MCPClient:
     def search(query: str, limit: int = 10) -> str:
         """Search the product documentation."""
         slug = query.replace(" ", "-")
-        hits = [f"docs/{slug}/overview", f"docs/{slug}/getting-started", f"docs/{slug}/agent-hooks"][:limit]
-        return "found:\n" + "\n".join(hits)
+        return "found:\n" + "\n".join([f"docs/{slug}/overview", f"docs/{slug}/getting-started", f"docs/{slug}/agent-hooks"][:limit])
 
     def get_version() -> str:
         """Return the documentation API version."""
         return "docs API version 1.4.2"
 
     client.register(
-        [
-            {"name": "search", "description": "Search the product documentation."},
-            {"name": "get_version", "description": "Return the documentation API version."},
-        ],
+        [{"name": "search", "description": "Search the product documentation."},
+         {"name": "get_version", "description": "Return the documentation API version."}],
         {"search": search, "get_version": get_version},
     )
     return client
@@ -523,10 +420,8 @@ def deploy_server() -> MCPClient:
         return f"triggered deployment for {service}"
 
     client.register(
-        [
-            {"name": "status", "description": "Return the deployment status of a service."},
-            {"name": "trigger", "description": "Trigger a new deployment for a service (destructive)."},
-        ],
+        [{"name": "status", "description": "Return the deployment status of a service."},
+         {"name": "trigger", "description": "Trigger a new deployment for a service (destructive)."}],
         {"status": status, "trigger": trigger},
     )
     return client
@@ -563,8 +458,7 @@ def _make_mcp_tool(client: MCPClient, raw_name: str, prefixed: str, description:
 
 BASE_TOOLS = [
     run_bash, run_read, run_write, run_edit, run_glob,
-    todo_write, load_skill, task,
-    connect_mcp,
+    todo_write, load_skill, task, connect_mcp,
     schedule_cron, list_crons, cancel_cron,
 ]
 CURRENT_TOOL_MAP: dict[str, Any] = {}
@@ -593,10 +487,6 @@ def mcp_state_section() -> str:
     return f"Connected MCP servers: {', '.join(mcp_clients)}"
 
 
-# ---------------------------------------------------------------------------
-# system prompt 组装（记忆 + skills + MCP 状态）
-# ---------------------------------------------------------------------------
-
 SYSTEM_BASE = (
     f"you are a coding agent at {WORKDIR}. Use the provided tools to solve tasks. "
     "Plan with todo_write, load skills on demand, delegate isolated investigation with task, "
@@ -605,25 +495,15 @@ SYSTEM_BASE = (
 
 
 def assemble_system_prompt(query_text: str = "") -> str:
-    return "\n\n".join([
-        SYSTEM_BASE,
-        skills_catalog(),
-        memory_section(query_text),
-        mcp_state_section(),
-    ])
+    return "\n\n".join([SYSTEM_BASE, skills_catalog(), memory_section(query_text), mcp_state_section()])
 
-
-# ---------------------------------------------------------------------------
-# 上下文压缩（简化：剪掉过长的工具结果）
-# ---------------------------------------------------------------------------
 
 MAX_TOOL_CHARS = 20000
 MAX_SINGLE_TOOL_CHARS = 4000
 
 
 def compact_messages(messages: list) -> list:
-    """把过长的单个工具结果截断，并给累计工具结果设一个总预算。"""
-    out: list = []
+    out = []
     tool_chars = 0
     for m in messages:
         if isinstance(m, ToolMessage):
@@ -639,14 +519,9 @@ def compact_messages(messages: list) -> list:
     return out
 
 
-# ---------------------------------------------------------------------------
-# 错误恢复（对模型调用做重试/退避/上下文裁剪）
-# ---------------------------------------------------------------------------
-
 def call_model_with_recovery(system: str, messages: list, tools: list):
-    """模型调用包裹恢复逻辑：临时失败指数退避重试，上下文过长则裁剪重试。"""
     llm = MODEL.bind_tools(tools)
-    last_err: Exception | None = None
+    last_err = None
     for attempt in range(4):
         try:
             return llm.invoke([SystemMessage(content=system)] + messages)
@@ -657,18 +532,12 @@ def call_model_with_recovery(system: str, messages: list, tools: list):
                 messages = compact_messages(messages)
                 print("[recover] trimmed context and retrying once")
             else:
-                wait = 2 ** attempt
-                print(f"[recover] attempt {attempt + 1} failed ({e}); retrying in {wait}s")
-                time.sleep(wait)
+                print(f"[recover] attempt {attempt + 1} failed ({e}); retrying in {2 ** attempt}s")
+                time.sleep(2 ** attempt)
     raise last_err
 
 
-# ---------------------------------------------------------------------------
-# 主循环：很多机制，一个 while True（手写版 LangGraph 循环）
-# ---------------------------------------------------------------------------
-
 def inject_pending(messages: list) -> None:
-    """把已完成的后台任务通知和到期 cron prompt 注入消息流。"""
     count = 0
     while True:
         try:
@@ -689,17 +558,14 @@ def inject_pending(messages: list) -> None:
 
 
 def execute_tool_calls(response: AIMessage) -> list:
-    """执行一条模型消息里的所有工具调用，插入 Hook 与权限。"""
     outputs = []
     for tool_call in response.tool_calls:
         name = tool_call["name"]
         args = tool_call.get("args", {})
-
         blocked = trigger_hooks("PreToolUse", name, args)
         if blocked:
             outputs.append(ToolMessage(content=str(blocked), tool_call_id=tool_call["id"], name=name, status="error"))
             continue
-
         tool = CURRENT_TOOL_MAP.get(name)
         if tool is None:
             output = f"Error: unknown tool {name}"
@@ -708,7 +574,6 @@ def execute_tool_calls(response: AIMessage) -> list:
                 output = tool.invoke(args)
             except Exception as e:
                 output = f"Error: {e}"
-
         result = ToolMessage(content=str(output), tool_call_id=tool_call["id"], name=name)
         trigger_hooks("PostToolUse", name, args, result)
         outputs.append(result)
@@ -718,32 +583,18 @@ def execute_tool_calls(response: AIMessage) -> list:
 def agent_loop(messages: list) -> None:
     if messages:
         trigger_hooks("UserPromptSubmit", getattr(messages[-1], "content", messages[-1]))
-
     while True:
-        # 1. 注入后台/定时通知。
         inject_pending(messages)
-
-        # 2. 组装 system prompt（记忆 + skills + MCP 状态）。
         query_text = str(getattr(messages[-1], "content", ""))
         system = assemble_system_prompt(query_text)
-
-        # 3. 取当前工具池，带恢复地调用模型。
         tools = assemble_tool_pool()
         response = call_model_with_recovery(system, messages, tools)
         messages.append(response)
-
-        # 4. 没有工具调用 → Stop → 结束本轮。
         if not response.tool_calls:
             trigger_hooks("Stop", messages)
             return
-
-        # 5. 执行工具，把结果追加回消息流，继续循环。
         messages.extend(execute_tool_calls(response))
 
-
-# ---------------------------------------------------------------------------
-# 打印与交互
-# ---------------------------------------------------------------------------
 
 def print_assistant_message(message: AIMessage) -> None:
     content = message.content
@@ -778,7 +629,7 @@ def print_tool_activity(message) -> None:
             print(content[:200])
 
 
-def last_assistant_message(messages: list) -> AIMessage | None:
+def last_assistant_message(messages: list):
     for m in reversed(messages):
         if isinstance(m, AIMessage):
             return m
@@ -788,7 +639,6 @@ def last_assistant_message(messages: list) -> AIMessage | None:
 if __name__ == "__main__":
     print("s15: Integrated Harness")
     print("输入问题，回车发送。输入 q 退出。\n")
-
     history = []
     while True:
         try:
@@ -797,11 +647,9 @@ if __name__ == "__main__":
             break
         if query.strip().lower() in ("q", "exit", ""):
             break
-
         history.append(HumanMessage(content=query))
         start = len(history)
         agent_loop(history)
-
         for message in history[start:]:
             print_tool_activity(message)
         last = last_assistant_message(history)

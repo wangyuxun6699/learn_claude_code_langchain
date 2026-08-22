@@ -19,6 +19,7 @@ env/
 .memory/
 .transcripts/
 .task_outputs/
+.runtime/
 
 # Editors and OS files
 .idea/

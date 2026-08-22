@@ -385,10 +385,10 @@ BASE_URL=https://your-openai-compatible-endpoint/v1
 | 11 | [s11: Background Tasks](s11_background_tasks/) | 后台命令、生命周期与完成通知 | ✅ 已实现 |
 | 12 | [s12: Cron Scheduler](s12_cron_scheduler/) | 五段式 Cron、持久化、到期队列与自动交付 | ✅ 已实现 |
 | 13 | [s13: Agent Teams](s13_agent_teams/) | Lead/Teammate 子图、共享状态与双向 handoff | ✅ 已实现 |
-| 14 | [s14: MCP & Plugin](s14_mcp_plugin/) | 等待 LangChain 实现 | ⬜ 占位 |
-| 15 | [s15: Integrated Harness](s15_integrated_harness/) | 等待 LangChain 实现 | ⬜ 占位 |
-| 16 | [s16: Workflow Runtime](s16_workflow_runtime/) | 等待 LangChain 实现 | ⬜ 占位 |
-| 17 | [s17: Goal Loop](s17_goal_loop/) | 等待 LangChain 实现 | ⬜ 占位 |
+| 14 | [s14: MCP & Plugin](s14_mcp_plugin/) | 动态工具池 + MCP 主机策略 | ✅ 已实现 |
+| 15 | [s15: Integrated Harness](s15_integrated_harness/) | 多机制合一 + 通知注入 | ✅ 已实现 |
+| 16 | [s16: Workflow Runtime](s16_workflow_runtime/) | 固定编排 + journal 续跑 | ✅ 已实现 |
+| 17 | [s17: Goal Loop](s17_goal_loop/) | 独立评估器决定停止 | ✅ 已实现 |
 
 > 旧 20 章中不再单独成章的 s10 System Prompt、s11 Error Recovery，以及并入 s13 的 s16-s18 团队章节，已原样归档到 [legacy/](legacy/)。
 
@@ -419,8 +419,9 @@ learn_claude_code/
 │   ├── code_uncommented.py
 │   └── README.md
 ├── s14_mcp_plugin/ ... s17_goal_loop/
-│   ├── code.py              # 空占位（未实现）
-│   └── README.md            # 状态说明
+│   ├── code.py              # 带注释教学版（可直接运行）
+│   ├── code_uncommented.py  # 无注释速读版
+│   └── README.md
 ├── legacy/                  # 20 章旧编排中移除/合并的章节（存档）
 ├── skills/                  # s07 可扫描的示例 Skills
 ├── .env.example
