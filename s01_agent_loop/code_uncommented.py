@@ -1,97 +1,133 @@
+"""
+s01_agent_loop.py - The Agent Loop
+
+The entire secret of an AI coding agent in one pattern:
+
+    while True:
+        response = LLM(messages, tools)
+        if response contains no tool_use:
+            break
+        execute tools
+        append results
+
+    +----------+      +-------+      +---------+
+    |   User   | ---> |  LLM  | ---> |  Tool   |
+    |  prompt  |      |       |      | execute |
+    +----------+      +---+---+      +----+----+
+                          ^               |
+                          |   tool_result |
+                          +---------------+
+                          (loop continues)
+
+This is the core loop: feed tool results back to the model
+until the model decides to stop. Later chapters add policy,
+hooks, and lifecycle controls around it.
+
+Usage:
+    pip install -r requirements.txt
+    OPENAI_API_KEY=... BASE_URL=... python s01_agent_loop/code.py
+"""
+
 import os
+import subprocess
+import sys
+from pathlib import Path
+
 try:
     import readline
+
     readline.parse_and_bind('set bind-tty-special-chars off')
     readline.parse_and_bind('set input-meta on')
     readline.parse_and_bind('set output-meta on')
     readline.parse_and_bind('set convert-meta off')
-    readline.parse_and_bind('set enable-meta-keybindings on')
 except ImportError:
     pass
-import subprocess
-from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from harness.langchain_messages import LangChainMessagesClient
 from dotenv import load_dotenv
-from harness.security import check_deny_list
-from langchain.agents import create_agent
-from langchain_openai import ChatOpenAI
-from langchain_core.messages import HumanMessage, ToolMessage, AIMessage
-from langchain_core.tools import StructuredTool
+
 load_dotenv(override=True)
-MODEL = os.environ['MODEL_ID']
-OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
-OPENAI_BASE_URL = os.getenv('BASE_URL')
-WORKDIR = Path.cwd()
-SYSTEM = f'you are a coding agent at {WORKDIR}. Use bash to solve tasks. Act dont explain'
 
-# 安全边界：shell=True 仅为教学演示，黑名单/路径检查不等于安全边界；生产请使用权限中间件 + 沙箱。
+client = LangChainMessagesClient(base_url=os.getenv("BASE_URL"))
+MODEL = os.environ["MODEL_ID"]
+
+SYSTEM = f"You are a coding agent at {os.getcwd()}. Use bash to solve tasks. Act, don't explain."
+
+TOOLS = [{
+    "name": "bash",
+    "description": "Run a shell command.",
+    "input_schema": {
+        "type": "object",
+        "properties": {"command": {"type": "string"}},
+        "required": ["command"],
+    },
+}]
+
 def run_bash(command: str) -> str:
-    denied = check_deny_list(command)
-    if denied:
-        return f'Blocked: {denied}'
+    dangerous = ["rm -rf /", "sudo", "shutdown", "reboot", "> /dev/"]
+    if any(d in command for d in dangerous):
+        return "Error: Dangerous command blocked"
     try:
-        r = subprocess.run(command, shell=True, cwd=WORKDIR, capture_output=True, text=True, timeout=120)
+        r = subprocess.run(command, shell=True, cwd=os.getcwd(),
+                           capture_output=True, text=True, errors="replace", timeout=120)
         out = (r.stdout + r.stderr).strip()
-        return out[:50000] if out else '(no output)'
+        return out[:50000] if out else "(no output)"
     except subprocess.TimeoutExpired:
-        return 'Error: Timeout(120s)'
-    except OSError as e:
-        return f'Error: {e}'
-bash_tool = StructuredTool.from_function(func=run_bash, name='bash', description='Run a shell command')
-TOOLS = [bash_tool]
+        return "Error: Timeout (120s)"
+    except (FileNotFoundError, OSError) as e:
+        return f"Error: {e}"
 
-def build_chat_model():
-    kwargs = {'model': MODEL, 'max_completion_tokens': 8000, 'temperature': 0}
-    if OPENAI_API_KEY:
-        kwargs['api_key'] = OPENAI_API_KEY
-    if OPENAI_BASE_URL:
-        kwargs['base_url'] = OPENAI_BASE_URL
-    return ChatOpenAI(**kwargs)
-chat_model = build_chat_model()
-agent = create_agent(model=chat_model, tools=TOOLS, system_prompt=SYSTEM)
+def agent_loop(messages: list):
+    while True:
+        response = client.messages.create(
+            model=MODEL, system=SYSTEM, messages=messages,
+            tools=TOOLS, max_tokens=8000,
+        )
 
-def print_assistant_message(message: AIMessage) -> None:
-    content = message.content
-    if isinstance(content, str):
-        print(content)
-        return
-    if isinstance(content, list):
-        for block in content:
-            if isinstance(block, dict):
-                if block.get('type') == 'text':
-                    print(block.get('text', ''))
-            elif hasattr(block, 'text'):
-                print(block.text)
+        messages.append({"role": "assistant", "content": response.content})
 
-def print_tool_activity(message: AIMessage | ToolMessage) -> None:
-    if isinstance(message, AIMessage):
-        for tool_call in message.tool_calls:
-            tool_name = tool_call['name']
-            tool_args = tool_call.get('args', {})
-            command = tool_args.get('command', '')
-            if tool_name == 'bash':
-                print(f'\x1b[33m$ {command}\x1b[0m')
-        return
-    if isinstance(message, ToolMessage):
-        print(str(message.content)[:200])
+        tool_calls = [
+            block for block in response.content if block.type == "tool_use"
+        ]
+        if not tool_calls:
+            return
 
-def agent_loop(messages: list) -> None:
-    result = agent.invoke({'messages': messages})
-    new_messages = result['messages'][len(messages):]
-    for message in new_messages:
-        print_tool_activity(message)
-    messages[:] = result['messages']
-if __name__ == '__main__':
+        results = []
+        for block in tool_calls:
+            print(f"\033[33m$ {block.input['command']}\033[0m")
+            output = run_bash(block.input["command"])
+            print(output[:200])
+            results.append({
+                "type": "tool_result",
+                "tool_use_id": block.id,
+                "content": output,
+            })
+
+        messages.append({"role": "user", "content": results})
+
+if __name__ == "__main__":
+    print("s01: Agent Loop")
+    print("Enter a question, press Enter to send. Type q to quit.\n")
+
     history = []
     while True:
         try:
-            query = input('\x1b[36ms01 >> \x1b[0m')
+
+            query = input("\001\033[36m\002s01 >> \001\033[0m\002")
         except (EOFError, KeyboardInterrupt):
             break
-        if query.strip().lower() in ('q', 'exit', ''):
+        if query.strip().lower() in ("q", "exit", ""):
             break
-        history.append(HumanMessage(content=query))
+        history.append({"role": "user", "content": query})
         agent_loop(history)
-        last_message = history[-1]
-        if isinstance(last_message, AIMessage):
-            print_assistant_message(last_message)
+
+        response_content = history[-1]["content"]
+        if isinstance(response_content, list):
+            for block in response_content:
+                if getattr(block, "type", None) == "text":
+                    print(block.text)
         print()

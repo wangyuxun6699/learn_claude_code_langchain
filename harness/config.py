@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """统一的环境配置读取（缺配置抛清晰错误，兼容 BASE_URL/OPENAI_BASE_URL）。"""
 from __future__ import annotations
 

@@ -1,23 +1,74 @@
-from dotenv import load_dotenv
-from harness.security import check_deny_list
-load_dotenv(override=True)
+#!/usr/bin/env python3
+"""
+s02_tool_use.py - Tools
 
+The agent loop from s01 does not change. This lesson adds four tools
+and a dispatch map:
 
-from langchain_core.tools import tool
-import os,subprocess
+    +----------+      +-------+      +--------------------------+
+    |   User   | ---> |  LLM  | ---> | Tool Dispatch            |
+    |  prompt  |      |       |      | bash       -> run_bash   |
+    +----------+      +---+---+      | read_file  -> run_read   |
+                          ^          | write_file -> run_write  |
+                          |          | edit_file  -> run_edit   |
+                          +----------+ glob       -> run_glob   |
+                          tool_result+--------------------------+
+
+  + run_read / run_write / run_edit / run_glob
+  + TOOL_HANDLERS instead of a hard-coded run_bash call
+  + safe_path to keep file tools inside the workspace
+
+Key insight: the loop stays the same; only tool registration and dispatch grow.
+"""
+
+import os
+import subprocess
+import sys
 from pathlib import Path
-from langchain_core.messages import AIMessage
-from langchain_openai import ChatOpenAI
-from langchain.agents import create_agent
 
+try:
+    import readline
+    readline.parse_and_bind('set bind-tty-special-chars off')
+    readline.parse_and_bind('set input-meta on')
+    readline.parse_and_bind('set output-meta on')
+    readline.parse_and_bind('set convert-meta off')
+except ImportError:
+    pass
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
+from harness.langchain_messages import LangChainMessagesClient
+from dotenv import load_dotenv
+
+load_dotenv(override=True)
 WORKDIR = Path.cwd()
-MODEL_ID = os.getenv("MODEL_ID")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-SYSTEM = f"you are a coding agent at {WORKDIR}. Use tools to solve tasks. Act dont explain"
-OPENAI_BASE_URL = os.getenv("BASE_URL")
+client = LangChainMessagesClient(base_url=os.getenv("BASE_URL"))
+MODEL = os.environ["MODEL_ID"]
 
+SYSTEM = f"You are a coding agent at {WORKDIR}. Use tools to solve tasks. Act, don't explain."
+
+
+# -- From s01 (unchanged) --
+
+def run_bash(command: str) -> str:
+    dangerous = ["rm -rf /", "sudo", "shutdown", "reboot", "> /dev/"]
+    if any(d in command for d in dangerous):
+        return "Error: Dangerous command blocked"
+    try:
+        r = subprocess.run(command, shell=True, cwd=WORKDIR,
+                           capture_output=True, text=True, errors="replace",
+                           timeout=120)
+        out = (r.stdout + r.stderr).strip()
+        return out[:50000] if out else "(no output)"
+    except subprocess.TimeoutExpired:
+        return "Error: Timeout (120s)"
+    except (FileNotFoundError, OSError) as e:
+        return f"Error: {e}"
+
+
+# -- New in s02: four tools --
 
 def safe_path(p: str) -> Path:
     path = (WORKDIR / p).resolve()
@@ -26,166 +77,122 @@ def safe_path(p: str) -> Path:
     return path
 
 
-@tool
-# 安全边界：shell=True 仅为教学演示，黑名单/路径检查不等于安全边界；生产请使用权限中间件 + 沙箱。
-def run_bash(command:str)->str:
-    """Execute a shell command in the current workspace."""
-    # 统一走 harness.security 的大小写不敏感、覆盖更广的拒绝策略。
-    denied = check_deny_list(command)
-    if denied:
-        return f"Blocked: {denied}"
-
-    try:
-        # 执行模型传入的 shell 命令。
-        # shell=True 允许执行字符串命令；cwd=WORKDIR 限定命令运行目录。
-        r = subprocess.run(
-            command,
-            shell=True,
-            cwd=WORKDIR,
-            capture_output=True,
-            text=True,
-            timeout=120,
-        )
-
-        # 合并标准输出和错误输出，方便模型统一读取执行结果。
-        out = (r.stdout + r.stderr).strip()
-
-        # 限制工具返回长度，避免一次命令输出过长把上下文撑爆。
-        return out[:50000] if out else "(no output)"
-    except subprocess.TimeoutExpired:
-        # 如果命令执行超过 120 秒，就返回超时提示。
-        return "Error: Timeout(120s)"
-    except OSError as e:
-        # 捕获常见系统级异常，并把错误信息返回给模型。
-        return f"Error: {e}"
-
-
-
-@tool
 def run_read(path: str, limit: int | None = None) -> str:
-    """Read a UTF-8 text file, optionally limiting the returned line count."""
     try:
         lines = safe_path(path).read_text(encoding="utf-8").splitlines()
         if limit and limit < len(lines):
-            lines = lines[:limit] + [f"...({len(lines) - limit} more lines)"]
+            lines = lines[:limit] + [f"... ({len(lines) - limit} more lines)"]
         return "\n".join(lines)
     except Exception as e:
         return f"Error: {e}"
-    
-@tool
-def run_write(path: str,content: str)-> str:
-    """Write UTF-8 content to a file, replacing its existing content."""
+
+
+def run_write(path: str, content: str) -> str:
     try:
         file_path = safe_path(path)
         file_path.parent.mkdir(parents=True, exist_ok=True)
-        file_path.write_text(content, encoding="utf-8")
-        return f"write {len(content)} bytes to {path}"
+        file_path.write_text(content, encoding="utf-8", newline="")
+        return f"Wrote {len(content)} bytes to {path}"
     except Exception as e:
         return f"Error: {e}"
 
-@tool
-def run_edit(path: str, old_text: str, new_text: str) ->str:
-    """Replace the first exact occurrence of old_text in a UTF-8 file."""
+
+def run_edit(path: str, old_text: str, new_text: str) -> str:
     try:
         file_path = safe_path(path)
         text = file_path.read_text(encoding="utf-8")
         if old_text not in text:
             return f"Error: text not found in {path}"
-        file_path.write_text(text.replace(old_text, new_text, 1), encoding="utf-8")
-        return f"edit {path}"
+        file_path.write_text(text.replace(old_text, new_text, 1), encoding="utf-8", newline="")
+        return f"Edited {path}"
     except Exception as e:
         return f"Error: {e}"
 
-@tool
-def run_glob(pattern: str) ->str:
-    """Find workspace files matching a glob pattern."""
+
+def run_glob(pattern: str) -> str:
     import glob as g
     try:
-        results = []
-        for match in g.glob(pattern, root_dir=WORKDIR):
-            if (WORKDIR / match).resolve().is_relative_to(WORKDIR):
-                results.append(match)
-        return "\n".join(results) if results else "(no matches)"
+        matches = sorted({
+            Path(match).as_posix() for match in g.glob(
+                pattern, root_dir=WORKDIR, recursive=True)
+            if (WORKDIR / match).resolve().is_relative_to(WORKDIR)
+        })
+        shown = matches[:200]
+        if len(matches) > 200:
+            shown.append("... (more matches omitted; narrow the pattern)")
+        return "\n".join(shown) if shown else "(no matches)"
     except Exception as e:
         return f"Error: {e}"
 
 
-def print_assistant_message(message:AIMessage) -> None:
-    # AIMessage.content 可能是字符串，也可能是内容块列表。
-    content = message.content
+# -- New in s02: tool definitions (one tool in s01, five in s02) --
 
-    # 如果是普通字符串，直接打印。
-    if isinstance(content, str):
-        print(content)
-        return
+TOOLS = [
+    {"name": "bash", "description": "Run a shell command.",
+     "input_schema": {"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]}},
+    {"name": "read_file", "description": "Read file contents.",
+     "input_schema": {"type": "object", "properties": {"path": {"type": "string"}, "limit": {"type": "integer"}}, "required": ["path"]}},
+    {"name": "write_file", "description": "Write content to a file.",
+     "input_schema": {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}, "required": ["path", "content"]}},
+    {"name": "edit_file", "description": "Replace exact text in a file once.",
+     "input_schema": {"type": "object", "properties": {"path": {"type": "string"}, "old_text": {"type": "string"}, "new_text": {"type": "string"}}, "required": ["path", "old_text", "new_text"]}},
+    {"name": "glob", "description": "Find files matching a glob pattern; ** matches recursively.",
+     "input_schema": {"type": "object", "properties": {"pattern": {"type": "string"}}, "required": ["pattern"]}},
+]
 
-    # 如果是内容块列表，就逐块提取文本内容。
-    if isinstance(content,list):
-        for block in content:
-            # OpenAI/Anthropic 不同适配器可能返回 dict 格式的内容块。
-            if isinstance(block, dict):
-                if block.get("type") == "text":
-                    print(block.get("text", ""))
-            # 有些内容块可能是对象，并通过 .text 保存文本。
-            elif hasattr(block, "text"):
-                print(block.text)
+# -- New in s02: dispatch map (replaces s01's hard-coded run_bash call) --
+
+TOOL_HANDLERS = {
+    "bash": run_bash, "read_file": run_read, "write_file": run_write,
+    "edit_file": run_edit, "glob": run_glob,
+}
 
 
-TOOLS = [run_bash,run_edit,run_glob,run_write,run_read]
+# -- The agent loop keeps the same shape as s01; only dispatch changes --
+# s01: output = run_bash(block.input["command"])
+# s02: output = TOOL_HANDLERS[block.name](**block.input)
 
+def agent_loop(messages: list):
+    while True:
+        response = client.messages.create(
+            model=MODEL, system=SYSTEM, messages=messages,
+            tools=TOOLS, max_tokens=8000,
+        )
+        messages.append({"role": "assistant", "content": response.content})
 
-MODEL = ChatOpenAI(
-    model = MODEL_ID,
-    max_completion_tokens = 8000,
-    temperature = 0,
-    api_key = OPENAI_API_KEY,
-    base_url = OPENAI_BASE_URL,
-)
+        tool_calls = [
+            block for block in response.content if block.type == "tool_use"
+        ]
+        if not tool_calls:
+            return
 
-agent = create_agent(
-    model=MODEL,
-    tools=TOOLS,
-    system_prompt=SYSTEM,
-)
+        results = []
+        for block in tool_calls:
+            print(f"\033[33m> {block.name}\033[0m")
+            handler = TOOL_HANDLERS.get(block.name)
+            output = handler(**block.input) if handler else f"Unknown: {block.name}"
+            print(str(output)[:200])
+            results.append({"type": "tool_result", "tool_use_id": block.id, "content": output})
 
-def agent_loop(messages: list) -> None:
-    result = agent.invoke({"messages": messages})
-    new_messages = result["messages"][len(messages):]
-    for message in new_messages:
-        if hasattr(message, "tool_calls") and message.tool_calls:
-            print("模型调用工具:")
-            for tool_call in message.tool_calls:
-                print("工具名：", tool_call["name"])
-                print("参数：", tool_call.get("args", {}))
-        elif message.__class__.__name__=="ToolMessage":
-            print("工具返回结果：")
-            print("工具名", getattr(message, "name", None))
-            print("内容:", message.content)
-
-        else:
-            print("模型回复:")
-            print(getattr(message, "content", message))
-
-    messages[:] = result["messages"]
-
+        messages.append({"role": "user", "content": results})
 
 
 if __name__ == "__main__":
-    print("s02: Tool Use — 在 s01 基础上加了 4 个工具")
-    print("输入问题，回车发送。输入 q 退出。\n")
+    print("s02: Tool Use - four tools added to s01")
+    print("Enter a question, press Enter to send. Type q to quit.\n")
 
     history = []
     while True:
         try:
-            query = input("\033[36ms02 >> \033[0m")
+            # \001/\002 tell Readline the ANSI escapes have zero display width.
+            query = input("\001\033[36m\002s02 >> \001\033[0m\002")
         except (EOFError, KeyboardInterrupt):
             break
         if query.strip().lower() in ("q", "exit", ""):
             break
         history.append({"role": "user", "content": query})
         agent_loop(history)
-#        print(history)
-
-#        last_message = history[-1]
-#        print_assistant_message(last_message)
+        for block in history[-1]["content"]:
+            if getattr(block, "type", None) == "text":
+                print(block.text)
         print()

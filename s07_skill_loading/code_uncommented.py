@@ -1,1062 +1,363 @@
-from __future__ import annotations
+"""
+s07_skill_loading.py - Skill Loading
 
-import glob
+The system prompt contains a catalog of skill names and descriptions.
+The model loads the full SKILL.md only when it calls load_skill.
+
+    skills/                    Startup
+    +------------------+       +------------------+
+    | code-review/     | ----> | SkillLoader      |
+    |   SKILL.md       |       | name + summary   |
+    | pdf/             |       +--------+---------+
+    |   SKILL.md       |                |
+    +------------------+                v
+                                 system prompt catalog
+
+    LLM -- load_skill(name) --> full SKILL.md
+     ^                              |
+     +--------- tool_result --------+
+"""
+
 import os
+import re
 import subprocess
-from collections.abc import Callable
-from contextvars import ContextVar
+import sys
 from pathlib import Path
-from typing import Any
-
-
-from dotenv import load_dotenv
-from langchain.agents import create_agent
-from langchain.agents.middleware import(
-    AgentState,
-    TodoListMiddleware,
-    after_agent,
-    before_agent,
-    wrap_tool_call
-)
-
-from langchain.tools.tool_node import ToolCallRequest
-from langchain_core.messages import AIMessage, ToolMessage
-from langchain_core.tools import tool
-from langchain_openai import ChatOpenAI
-from langgraph.errors import GraphRecursionError
-from langgraph.runtime import Runtime
-from langgraph.types import Command
 
 import yaml
 
+try:
+    import readline
+    readline.parse_and_bind('set bind-tty-special-chars off')
+    readline.parse_and_bind('set input-meta on')
+    readline.parse_and_bind('set output-meta on')
+    readline.parse_and_bind('set convert-meta off')
+except ImportError:
+    pass
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from harness.langchain_messages import LangChainMessagesClient
+from dotenv import load_dotenv
 
 load_dotenv(override=True)
+WORKDIR = Path.cwd()
+SKILLS_DIR = WORKDIR / "skills"
+client = LangChainMessagesClient(base_url=os.getenv("BASE_URL"))
+MODEL = os.environ["MODEL_ID"]
 
-WORKDIR = Path.cwd().resolve()
-SKILL_DIR = WORKDIR/"skills"
+class SkillLoader:
+    def __init__(self, skills_dir: Path):
+        self.skills_dir = skills_dir
+        self.skills: dict[str, dict[str, str]] = {}
+        self.scan()
 
-SKILL_REGISTRY: dict[str, dict[str, str]] = {}
+    @staticmethod
+    def parse_frontmatter(text: str) -> tuple[dict, str]:
+        lines = text.splitlines(keepends=True)
+        if not lines or lines[0].rstrip("\r\n") != "---":
+            return {}, text
 
-
-def _parse_frontmatter(raw: str) -> tuple[dict[str,Any], str]:
-
-    lines = raw.splitlines()
-    if not lines or lines[0].strip() != "---":
-        return {}, raw
-
-    try:
-        end_index = next(
-            index
-            for index, lines in enumerate(lines[1:], start=1)
-            if lines.strip() == "---"
+        closing_index = next(
+            (index for index, line in enumerate(lines[1:], start=1)
+             if line.rstrip("\r\n") == "---"),
+            None,
         )
-    except StopIteration:
-        return {}, raw
+        if closing_index is None:
+            return {}, text
 
+        frontmatter = "".join(lines[1:closing_index])
+        body = "".join(lines[closing_index + 1:]).strip()
+        try:
+            metadata = yaml.safe_load(frontmatter) or {}
+        except yaml.YAMLError:
+            metadata = {}
+        if not isinstance(metadata, dict):
+            metadata = {}
+        return metadata, body
 
-    yaml_text = "\n".join(lines[1:end_index])
-    body = "\n".join(lines[end_index+1:])
+    def scan(self):
+        self.skills.clear()
+        if not self.skills_dir.exists():
+            return
 
-    try:
-        metadata = yaml.safe_load(yaml_text) or {}
-    except yaml.YAMLError:
-        metadata = {}
+        skills_root = self.skills_dir.resolve()
+        for manifest in sorted(self.skills_dir.glob("*/SKILL.md")):
+            if (not manifest.is_file()
+                    or not manifest.resolve().is_relative_to(skills_root)):
+                continue
+            content = manifest.read_text(encoding="utf-8")
+            metadata, body = self.parse_frontmatter(content)
+            raw_name = metadata.get("name")
+            name = raw_name.strip() if isinstance(raw_name, str) else ""
+            name = name or manifest.parent.name
+            raw_description = metadata.get("description")
+            description = (raw_description.strip()
+                           if isinstance(raw_description, str) else "")
+            description = description or body.split("\n", 1)[0]
+            description = " ".join(str(description).lstrip("# ").split())
+            self.skills[name] = {
+                "name": name,
+                "description": description,
+                "content": content,
+            }
 
-    if not isinstance(metadata, dict):
-           metadata = {}
-
-    return metadata, body
-
-
-def _scan_skills() -> None:
-
-    if not SKILL_DIR.exists():
-        return
-
-    for manifest in sorted(SKILL_DIR.glob("*/SKILL.md")):
-        raw = manifest.read_text(
-            encoding="utf-8",
-            errors="replace",
-        )
-
-
-        metadata, body = _parse_frontmatter(raw)
-
-
-        name = str(
-            metadata.get("name")
-            or manifest.parent.name
-        )
-
-        description = metadata.get("description")
-
-        if not description:
-            description = next(
-                (
-                    line.lstrip("#").strip()
-                    for line in body.splitlines()
-                    if line.lstrip().startswith("#")
-                ),
-                name,
-            )
-
-
-        description = " ".join(
-            str(description).split()
+    def catalog(self) -> str:
+        if not self.skills:
+            return "(no skills found)"
+        return "\n".join(
+            f"- {skill['name']}: {skill['description']}"
+            for skill in self.skills.values()
         )
 
-        if name in SKILL_REGISTRY:
-            raise ValueError(
-                f"Duplicate skill name: {name}"
-            )
+    def load(self, name: str) -> str:
+        skill = self.skills.get(name)
+        if skill:
+            return skill["content"]
+        available = ", ".join(self.skills) or "none"
+        return f"Error: Unknown skill '{name}'. Available: {available}"
 
-        skill_root = manifest.parent.relative_to(
-            WORKDIR
-        ).as_posix()
+SKILL_LOADER = SkillLoader(SKILLS_DIR)
 
-
-        SKILL_REGISTRY[name] = {
-            "name": name,
-            "description": description,
-            "content": raw,
-            "root": skill_root,
-        }
-
-def list_skills() ->str:
-
-    if not SKILL_REGISTRY:
-        return "- (no skills found)"
-
-    return "\n".join(
-        f"- {skill['name']}: {skill['description']}"
-        for skill in SKILL_REGISTRY.values()
+def build_system_prompt() -> str:
+    return (
+        f"You are a coding agent at {WORKDIR}. Use tools to solve tasks. "
+        "Act, don't explain.\n\n"
+        f"Skills available:\n{SKILL_LOADER.catalog()}\n\n"
+        "Use load_skill to read the full instructions when a skill applies."
     )
 
+SYSTEM = build_system_prompt()
 
-_scan_skills()
+def run_bash(command: str) -> str:
+    try:
+        result = subprocess.run(
+            command, shell=True, cwd=WORKDIR,
+            capture_output=True, text=True, errors="replace", timeout=120,
+        )
+        output = (result.stdout + result.stderr).strip()
+        return output[:50000] if output else "(no output)"
+    except subprocess.TimeoutExpired:
+        return "Error: Timeout (120s)"
 
-SKILL_CATALOG = list_skills()
+def run_read(path: str, limit: int | None = None) -> str:
+    try:
+        lines = (WORKDIR / path).resolve().read_text(encoding="utf-8").splitlines()
+        if limit and limit < len(lines):
+            lines = lines[:limit] + [f"... ({len(lines) - limit} more lines)"]
+        return "\n".join(lines)
+    except Exception as e:
+        return f"Error: {e}"
 
-MODEL_ID = os.getenv("MODEL_ID")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-OPENAI_BASE_URL = os.getenv("BASE_URL")
+def run_write(path: str, content: str) -> str:
+    try:
+        file_path = (WORKDIR / path).resolve()
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+        file_path.write_text(content, encoding="utf-8", newline="")
+        return f"Wrote {len(content)} bytes to {path}"
+    except Exception as e:
+        return f"Error: {e}"
 
+def run_edit(path: str, old_text: str, new_text: str) -> str:
+    try:
+        file_path = (WORKDIR / path).resolve()
+        text = file_path.read_text(encoding="utf-8")
+        if old_text not in text:
+            return f"Error: text not found in {path}"
+        file_path.write_text(text.replace(old_text, new_text, 1), encoding="utf-8", newline="")
+        return f"Edited {path}"
+    except Exception as e:
+        return f"Error: {e}"
 
-SKILL_SYSTEM_PROMPT = f"""
-Available skills:
+def run_glob(pattern: str) -> str:
+    import glob
+    try:
+        matches = sorted({
+            Path(match).as_posix() for match in glob.glob(
+                pattern, root_dir=WORKDIR, recursive=True)
+            if (WORKDIR / match).resolve().is_relative_to(WORKDIR)
+        })
+        shown = matches[:200]
+        if len(matches) > 200:
+            shown.append("... (more matches omitted; narrow the pattern)")
+        return "\n".join(shown) if shown else "(no matches)"
+    except Exception as e:
+        return f"Error: {e}"
 
-{SKILL_CATALOG}
+TOOLS = [
+    {"name": "bash", "description": "Run a shell command.",
+     "input_schema": {"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]}},
+    {"name": "read_file", "description": "Read file contents.",
+     "input_schema": {"type": "object", "properties": {"path": {"type": "string"}, "limit": {"type": "integer"}}, "required": ["path"]}},
+    {"name": "write_file", "description": "Write content to a file.",
+     "input_schema": {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}, "required": ["path", "content"]}},
+    {"name": "edit_file", "description": "Replace exact text in a file once.",
+     "input_schema": {"type": "object", "properties": {"path": {"type": "string"}, "old_text": {"type": "string"}, "new_text": {"type": "string"}}, "required": ["path", "old_text", "new_text"]}},
+    {"name": "glob", "description": "Find files matching a glob pattern; ** matches recursively.",
+     "input_schema": {"type": "object", "properties": {"pattern": {"type": "string"}}, "required": ["pattern"]}},
+    {"name": "load_skill", "description": "Load the full SKILL.md content by skill name.",
+     "input_schema": {"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]}},
+]
 
-Skills contain specialized instructions that should be loaded only when
-relevant.
-
-When a request clearly matches a skill description:
-
-1. Call load_skill using the exact skill name.
-2. Read and follow the returned instructions before doing the task.
-3. Do not guess a skill's full instructions from its description.
-4. Load only skills relevant to the current request.
-"""
-
-
-AGENT_SCOPE: ContextVar[str] = ContextVar(
-    "agent_scope",
-    default="parent"
-)
-
-
-HOOKS: dict[str, list[Callable[..., Any]]] = {
-    "UserPromptSubmit": [],
-    "PreToolUse" : [],
-    "PostToolUse": [],
-    "Stop": [],
+TOOL_HANDLERS = {
+    "bash": run_bash,
+    "read_file": run_read,
+    "write_file": run_write,
+    "edit_file": run_edit,
+    "glob": run_glob,
+    "load_skill": SKILL_LOADER.load,
 }
 
-def register_hook(event: str,callback: Callable[..., Any]) -> None:
+HOOKS = {"UserPromptSubmit": [], "PreToolUse": [], "PostToolUse": [], "Stop": []}
 
-
-    if event not in HOOKS:
-        raise ValueError(f"unknown hook event:{event}")
-
+def register_hook(event: str, callback):
     HOOKS[event].append(callback)
 
-
-def trigger_hook(event:str, *args: Any)-> Any|None:
-
-    for callable in HOOKS.get(event,[]):
-        result = callable(*args)
-
+def trigger_hooks(event: str, *args):
+    for callback in HOOKS[event]:
+        result = callback(*args)
         if result is not None:
             return result
     return None
 
-@before_agent
-def user_prompt_submit(state:AgentState, runtime:Runtime) -> dict[str, Any] |None:
-
-
-    messages = state.get("messages", [])
-
-    if not messages:
-        return None
-
-    last_messages = messages[-1]
-
-    if isinstance(last_messages, dict):
-        content = last_messages.get("content")
-
-    else:
-        content = getattr(last_messages,"content",None)
-
-    trigger_hook("UserPromptSubmit", content)
-
-    return None
-
-
-@wrap_tool_call
-def tool_hook(
-    request: ToolCallRequest,
-    handler: Callable[
-        [ToolCallRequest],
-        ToolMessage | Command,
-    ],
-) -> ToolMessage | Command:
-    tool_name = request.tool_call["name"]
-    tool_args = request.tool_call.get("args", {})
-    tool_call_id = request.tool_call["id"]
-
-    blocked_reason = trigger_hook(
-        "PreToolUse",
-        tool_name,
-        tool_args,
-    )
-
-    if blocked_reason:
-        return ToolMessage(
-            content=str(blocked_reason),
-            tool_call_id = tool_call_id,
-            name = tool_name,
-            status = "error",
-        )
-
-    result = handler(request)
-
-    trigger_hook(
-        "PostToolUse",
-        tool_name,
-        tool_args,
-        result,
-    )
-
-    return result
-
-
-@after_agent
-def stop_hook(
-    state: AgentState,
-    runtime: Runtime,
-) -> dict[str, Any] | None:
-
-    trigger_hook(
-        "Stop",
-        state.get("messages", [])
-    )
-
-    return None
-
-from harness.security import check_deny_list
-
-POTENTIALLY_DESTRUCTIVE_COMMANDS = [
-    "rm ",
-    "> /etc/",
-    "chmod 777",
-]
-
-def resolve_path(raw_path:str)-> Path:
-
-
-    candidate = Path(raw_path)
-
-    if candidate.is_absolute():
-        return candidate.resolve()
-
-    return (WORKDIR/candidate).resolve()
-
-
-# check_deny_list 已由上方 harness.security import 提供。
-
-
-    return None
-
-def ask_user(tool_name:str, args:dict[str, Any],reason: str) ->bool:
-
-    scope = AGENT_SCOPE.get()
-
-    print(f"\nWarning: [{scope}] Permission required")
-    print(f"Reason: {reason}")
-    print(f"Tool: {tool_name}")
-    print(f"Arguments: {args}")
-
-    choice = input("Allow? [y/N] ").strip().lower()
-
-    return choice in {"y", "yes"}
-
-
-def  check_rules(
-        tool_name: str,
-        args: dict[str, Any]
-) -> str| None:
-
-
-    if tool_name == "run_bash":
-        command = str(args.get("command", ""))
-        normalized = command.lower()
-
-        if normalized.strip().startswith("del "):
-            return "Potentially destructive shell command: del "
-        for pattern in POTENTIALLY_DESTRUCTIVE_COMMANDS:
-            if pattern.lower() in normalized:
-                return(
-                    "Potentially destructive shell command: "
-                    f"{pattern}"
-                )
-
-    if tool_name in {"run_read","run_write","run_edit"}:
-        raw_path = str(args.get("path", ""))
-
-        try:
-            target = resolve_path(raw_path)
-        except(OSError, RuntimeError, ValueError) as exc:
-            return f"Invalid path:{exc}"
-
-        if not target.is_relative_to(WORKDIR):
-            return f"Operation accesses outside workspace: {target}"
-
-    return None
-
-
-def check_permission(
-        tool_name: str,
-        args: dict[str, Any]
-)-> bool:
-
-
-    if tool_name == "run_bash":
-        command = str(args.get("command", ""))
-
-        denied_reason = check_deny_list(command)
-
-        if denied_reason:
-            print(f"\nBlocked: {denied_reason}")
-            return False
-
-    confirmation_reason = check_rules(
-        tool_name,
-        args,
-    )
-
-    if confirmation_reason:
-        return ask_user(
-            tool_name,
-            args,
-            confirmation_reason,
-        )
-
-    return True
-
-def on_user_prompt_submit(content: Any) -> None:
-    print(f"[UserPromptSubmit] {content}")
-
-def on_pre_tool_use(
-        tool_name: str,
-        tool_args: dict[str, Any],
-) -> str | None:
-    scope = AGENT_SCOPE.get()
-
-    print(f"[{scope} PreToolUse] {tool_name}")
-    print(f"Arguments: {tool_args}")
-
-    if not check_permission(tool_name, tool_args):
-        return "Permission denied"
-
-    return None
-
-def on_post_tool_use(
-        tool_name: str,
-        tool_args: dict[str, Any],
-        result: ToolMessage | Command,
-) ->None:
-    scope = AGENT_SCOPE.get()
-
-    print(f"[{scope} PostToolUse] {tool_name}")
-
-    content = getattr(result, "content", result)
-    preview = str(content)
-
-    if len(preview) >500:
-        preview = preview[:500] + "...(truncated)"
-
-    print(f"Result: {preview}")
-
-
-def on_stop(messages: list[Any]) ->None:
-    tool_call_count = 0
-    for message in messages:
-        if isinstance(message, AIMessage):
-            tool_call_count += len(message.tool_calls or [])
-
-    print(
-        f"[Stop] messages={len(messages)}, "
-        f"tool_calls={tool_call_count}"
-    )
-
-
-register_hook(
-    "UserPromptSubmit",
-    on_user_prompt_submit,
+DENY_LIST = ["rm -rf /", "sudo", "shutdown", "reboot", "mkfs", "dd if="]
+DESTRUCTIVE_COMMAND_WORD = re.compile(
+    r"(?i)(?:^|[;&|()\n])\s*(?:rm|del)(?=\s|$|[;&|()])"
 )
+DESTRUCTIVE = ["rm ", "> /etc/", "chmod 777"]
 
-register_hook(
-    "PreToolUse",
-    on_pre_tool_use,
-)
+def contains_destructive_command(command: str) -> bool:
+    return bool(DESTRUCTIVE_COMMAND_WORD.search(command))
 
-register_hook(
-    "PostToolUse",
-    on_post_tool_use,
-)
-
-register_hook(
-    "Stop",
-    on_stop,
-)
-
-
-@tool
-def load_skill(name: str) -> str:
-    """Load the full instructions for a skill.
-
-    Args:
-        name: Exact skill name shown in the available-skills catalog.
-    """
-
-    skill = SKILL_REGISTRY.get(name)
-
-    if skill is None:
-        available = ", ".join(SKILL_REGISTRY)
-        return (
-            f"Skill not found: {name}. "
-            f"Available skills: {available or '(none)'}"
-        )
-
-    return (
-        f"Loaded skill: {skill['name']}\n"
-        f"Skill root: {skill['root']}\n"
-        "Resolve relative paths mentioned by this skill "
-        "against the skill root above.\n\n"
-        f"{skill['content']}"
-    )
-
-@tool
-# 安全边界：shell=True 仅为教学演示，黑名单/路径检查不等于安全边界；生产请使用权限中间件 + 沙箱。
-def run_bash(command: str) -> str:
-    """Execute a shell command in the current workspace."""
-
-    try:
-        result = subprocess.run(
-            command,
-            shell=True,
-            cwd=WORKDIR,
-            capture_output=True,
-            text=True,
-            errors="replace",
-            timeout=120,
-        )
-
-        output = (
-            result.stdout
-            + result.stderr
-        ).strip()
-
-        if not output:
-            output = "(no output)"
-
-        if result.returncode != 0:
-            output = (
-                f"Exit code: {result.returncode}\n"
-                f"{output}"
-            )
-
-        return output[:50000]
-
-    except subprocess.TimeoutExpired:
-        return "Error: command timed out after 120 seconds"
-
-    except OSError as exc:
-        return f"Error: {exc}"
-
-
-@tool
-def run_read(
-    path: str,
-    limit: int | None = None,
-) -> str:
-    """Read a UTF-8 text file.
-
-    Args:
-        path: File path, normally relative to the workspace.
-        limit: Optional maximum number of lines to return.
-    """
-
-    try:
-        file_path = resolve_path(path)
-
-        lines = file_path.read_text(
-            encoding="utf-8",
-            errors="replace",
-        ).splitlines()
-
-        if limit is not None and limit >= 0 and limit < len(lines):
-            remaining = len(lines) - limit
-
-            lines = [
-                *lines[:limit],
-                f"...({remaining} more lines)",
-            ]
-
-        return "\n".join(lines)
-
-    except (OSError, ValueError) as exc:
-        return f"Error: {exc}"
-
-
-@tool
-def run_write(
-    path: str,
-    content: str,
-) -> str:
-    """Write UTF-8 content to a file, replacing existing content.
-
-    Args:
-        path: Target file path.
-        content: Complete new file content.
-    """
-
-    try:
-        file_path = resolve_path(path)
-
-        file_path.parent.mkdir(
-            parents=True,
-            exist_ok=True,
-        )
-
-        file_path.write_text(
-            content,
-            encoding="utf-8",
-        )
-
-        return f"Wrote {len(content)} characters to {path}"
-
-    except (OSError, ValueError) as exc:
-        return f"Error: {exc}"
-
-
-@tool
-def run_edit(
-    path: str,
-    old_text: str,
-    new_text: str,
-) -> str:
-    """Replace the first exact occurrence of text in a UTF-8 file.
-
-    Args:
-        path: Target file path.
-        old_text: Exact text that should be replaced.
-        new_text: Replacement text.
-    """
-
-    try:
-        file_path = resolve_path(path)
-
-        current_content = file_path.read_text(
-            encoding="utf-8",
-            errors="replace",
-        )
-
-        if old_text not in current_content:
-            return f"Error: old_text was not found in {path}"
-
-        updated_content = current_content.replace(
-            old_text,
-            new_text,
-            1,
-        )
-
-        file_path.write_text(
-            updated_content,
-            encoding="utf-8",
-        )
-
-        return f"Edited {path}"
-
-    except (OSError, ValueError) as exc:
-        return f"Error: {exc}"
-
-
-@tool
-def run_glob(pattern: str) -> str:
-    """Find workspace files matching a glob pattern.
-
-    Args:
-        pattern: Pattern such as "*.py" or "src/**/*.py".
-    """
-
-    try:
-        results: list[str] = []
-
-        for match in glob.glob(
-            pattern,
-            root_dir=WORKDIR,
-            recursive=True,
+def permission_hook(block):
+    """PreToolUse: block denied operations and ask about risky ones."""
+    if block.name == "bash":
+        command = block.input.get("command", "")
+        for pattern in DENY_LIST:
+            if pattern in command:
+                print(f"\n\033[31m[blocked] '{pattern}'\033[0m")
+                return "Permission denied by deny list"
+        if contains_destructive_command(command) or any(
+            keyword in command for keyword in DESTRUCTIVE
         ):
-            full_path = (WORKDIR / match).resolve()
+            print("\n\033[33m[permission] Potentially destructive command\033[0m")
+            print(f"   Tool: {block.name}({block.input})")
+            choice = input("   Allow? [y/N] ").strip().lower()
+            if choice not in ("y", "yes"):
+                return "Permission denied by user"
 
-            if full_path.is_relative_to(WORKDIR):
-                results.append(match)
+    if block.name in ("read_file", "write_file", "edit_file"):
+        path = block.input.get("path", "")
+        if not (WORKDIR / path).resolve().is_relative_to(WORKDIR):
+            print("\n\033[33m[permission] Access outside workspace\033[0m")
+            print(f"   Tool: {block.name}({block.input})")
+            choice = input("   Allow? [y/N] ").strip().lower()
+            if choice not in ("y", "yes"):
+                return "Permission denied by user"
+    return None
 
-        if not results:
-            return "(no matches)"
+def log_hook(block):
+    """PreToolUse: log every tool call."""
+    args_preview = str(list(block.input.values())[:2])[:60]
+    print(f"\033[90m[HOOK] {block.name}({args_preview})\033[0m")
+    return None
 
-        return "\n".join(sorted(results))
+def large_output_hook(block, output):
+    """PostToolUse: warn on large output."""
+    if len(str(output)) > 100000:
+        print(f"\033[33m[HOOK] Large output from {block.name}: {len(str(output))} chars\033[0m")
+    return None
 
-    except (OSError, ValueError) as exc:
-        return f"Error: {exc}"
+def context_inject_hook(query: str):
+    """UserPromptSubmit: log the working directory."""
+    print(f"\033[90m[HOOK] UserPromptSubmit: working in {WORKDIR}\033[0m")
+    return None
 
-BASE_TOOLS = [
-    run_bash,
-    run_read,
-    run_write,
-    run_edit,
-    run_glob,
-    load_skill,
-]
-
-
-MODEL = ChatOpenAI(
-    model=MODEL_ID,
-    max_completion_tokens=8000,
-    temperature=0,
-    api_key=OPENAI_API_KEY,
-    base_url=OPENAI_BASE_URL
-)
-
-SUB_SYSTEM = f"""
-You are an isolated coding subagent working in:
-
-{WORKDIR}
-
-{SKILL_SYSTEM_PROMPT}
-
-Complete the exact task given by the parent agent.
-
-Rules:
-
-1. Work independently and use the available tools when necessary.
-2. You do not have access to the parent's conversation history.
-3. Do not assume information that was not included in the task description.
-4. Do not delegate or attempt to create another agent.
-5. When finished, return a concise but complete summary.
-6. Include relevant file paths, findings, changes, verification results,
-   and unresolved problems in the final summary.
-"""
-
-
-SUB_AGENT = create_agent(
-    model=MODEL,
-    tools=BASE_TOOLS,
-    system_prompt=SUB_SYSTEM,
-    middleware=[tool_hook],
-    name="worker",
-)
-
-def extract_final_text(messages: list[Any]) -> str:
-
-
-    for message in reversed(messages):
-        if not isinstance(message, AIMessage):
-            continue
-
-
-        content = message.content
-
-        if isinstance(content, str):
-            if content.strip():
-                return content.strip()
-
-
-            continue
-
-        if not isinstance(content, list):
-            continue
-
-        texts: list[str] = []
-
-        for block in content:
-            text:str | None =None
-
-            if isinstance(block, str):
-                text = block
-
-            elif isinstance(block,dict):
-                possible_text = block.get("text")
-
-                if isinstance(possible_text, str):
-                    text = possible_text
-
-            else:
-                possible_text = getattr(
-                    block,
-                    "text",
-                    None
-                )
-
-                if isinstance(possible_text, str):
-                    text = possible_text
-
-            if text and text.strip():
-                texts.append(text.strip())
-
-        if texts:
-            return "\n".join(texts)
-
-    return ""
-
-@tool("task")
-def task(description: str) -> str:
-    """Launch an isolated subagent for a complex subtask.
-
-    The subagent receives only this description, not the parent conversation.
-    Include the complete objective, paths, constraints and expected output.
-    Only the final textual conclusion is returned.
-    """
-
-    print("\n\033[35m[Subagent spawned]\033[0m")
-    print(f"Task: {description}")
-
-    scope_token = AGENT_SCOPE.set("sub")
-
-    try:
-        result = SUB_AGENT.invoke(
-            {
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": description,
-                    }
-                ]
-            },
-            config={"recursion_limit": 128},
+def summary_hook(messages: list):
+    """Stop: print the number of tool results in this message list."""
+    tool_count = sum(
+        1
+        for message in messages
+        for block in (
+            message.get("content")
+            if isinstance(message.get("content"), list)
+            else []
         )
-
-        summary = extract_final_text(
-            result.get("messages", [])
-        )
-
-        return (
-            summary
-            or "Subagent finished without a textual conclusion."
-        )
-
-    except GraphRecursionError:
-        return (
-            "Subagent stopped because it reached "
-            "the execution limit."
-        )
-
-    except Exception as exc:
-        return (
-            "Subagent failed: "
-            f"{type(exc).__name__}: {exc}"
-        )
-
-    finally:
-        AGENT_SCOPE.reset(scope_token)
-        print("\033[35m[Subagent done]\033[0m")
-
-PARENT_SYSTEM = f"""
-You are a coding agent working in:
-
-{WORKDIR}
-{SKILL_SYSTEM_PROMPT}
-
-You must use write_todos for every non-trivial request.
-
-Before using run_bash, run_read, run_write, run_edit, run_glob, or task,
-create or update the todo list.
-
-Use task when a subproblem is:
-
-- complex and self-contained
-- likely to require reading many files
-- likely to require several tool calls
-- useful to solve in an isolated context
-
-The task subagent cannot see this conversation. Every task description must
-therefore contain:
-
-- the precise objective
-- relevant files and directories
-- necessary background information
-- constraints
-- expected output
-- whether files may be modified
-
-The task tool returns only the subagent's final conclusion. Its intermediate
-messages are deliberately discarded.
-
-After receiving a task result, evaluate it, verify it when necessary, and
-continue working on the parent request.
-
-For this demonstration, you MUST use task for every request that requires
-reading, writing, editing, or executing files. The parent agent must not
-perform those operations directly.
-"""
-
-
-PARENT_TOOLS = [
-    *BASE_TOOLS,
-    task,
-]
-
-PARENT_MIDDLEWARE = [
-    user_prompt_submit,
-
-    TodoListMiddleware(
-        system_prompt="""
-        You must call write_todos before calling run_bash, run_read, run_write,
-        run_edit, run_glob, or task.
-
-        For every non-empty, non-trivial request:
-
-        1. Create at least one todo item before using another tool.
-        2. Keep exactly one relevant item in_progress while working.
-        3. Update todo statuses as work progresses.
-        4. Mark items completed only after the work is actually complete.
-        """,
-        tool_description="""
-        Create or update the current task list. This is a mandatory planning tool.
-        Call it before using run_bash, run_read, run_write, run_edit, run_glob,
-        or task.
-        """,
-    ),
-
-    tool_hook,
-    stop_hook,
-]
-
-agent = create_agent(
-    model= MODEL,
-    tools=PARENT_TOOLS,
-    system_prompt=PARENT_SYSTEM,
-    middleware=PARENT_MIDDLEWARE,
-    name="parent",
-)
-
-
-def content_to_text(content: Any) -> str:
-
-
-    if isinstance(content, str):
-        return content
-
-    if not isinstance(content, list):
-        return str(content)
-
-    texts: list[str] = []
-
-    for block in content:
-        if isinstance(block, str):
-            texts.append(block)
-            continue
-
-        if isinstance(block, dict):
-            text = block.get("text")
-
-            if isinstance(text, str):
-                texts.append(text)
-
-            continue
-
-        text = getattr(block, "text", None)
-
-        if isinstance(text, str):
-            texts.append(text)
-
-    return "\n".join(texts)
-
-
-def print_message(message: Any) -> None:
-
-
-    if isinstance(message, AIMessage):
-        if message.tool_calls:
-            print("\n模型调用工具：")
-
-            for tool_call in message.tool_calls:
-                print(f"工具名：{tool_call['name']}")
-                print(
-                    "参数："
-                    f"{tool_call.get('args', {})}"
-                )
-
-        text = content_to_text(message.content)
-
-        if text.strip():
-            print("\n模型回复：")
-            print(text)
-
-        return
-
-    if isinstance(message, ToolMessage):
-        print("\n工具返回结果：")
-        print(f"工具名：{message.name}")
-        print(f"状态：{getattr(message, 'status', 'success')}")
-        print(f"内容：{message.content}")
-        return
-
-    content = getattr(message, "content", message)
-
-    print("\n消息：")
-    print(content_to_text(content))
-
-
-def print_todos(todos: list[dict[str, Any]]) -> None:
-
-
-    print("\n当前 Todo：")
-
-    for index, todo_item in enumerate(
-        todos,
-        start=1,
-    ):
-        status = todo_item.get(
-            "status",
-            "pending",
-        )
-
-        content = todo_item.get(
-            "content",
-            "",
-        )
-
-        print(
-            f"{index}. [{status}] {content}"
-        )
-
-
-def agent_loop(
-    session_state: dict[str, Any],
-) -> None:
-
-
-    existing_messages = session_state.get(
-        "messages",
-        [],
+        if isinstance(block, dict) and block.get("type") == "tool_result"
     )
+    print(f"\033[90m[HOOK] Stop: session used {tool_count} tool calls\033[0m")
+    return None
 
-    seen_message_count = len(existing_messages)
-    last_todos = session_state.get("todos")
-    final_state: dict[str, Any] | None = None
+register_hook("UserPromptSubmit", context_inject_hook)
+register_hook("PreToolUse", permission_hook)
+register_hook("PreToolUse", log_hook)
+register_hook("PostToolUse", large_output_hook)
+register_hook("Stop", summary_hook)
 
-    for state in agent.stream(
-        session_state,
-        stream_mode="values",
-    ):
-        final_state = state
+def execute_tool(block) -> str:
+    blocked = trigger_hooks("PreToolUse", block)
+    if blocked:
+        return str(blocked)
 
-        todos = state.get("todos")
+    handler = TOOL_HANDLERS.get(block.name)
+    try:
+        output = handler(**block.input) if handler else f"Unknown: {block.name}"
+    except Exception as e:
+        output = f"Error: {e}"
 
-        if todos is not None and todos != last_todos:
-            print_todos(todos)
-            last_todos = todos
+    trigger_hooks("PostToolUse", block, output)
+    return str(output)
 
-        current_messages = state.get(
-            "messages",
-            [],
-        )
-
-        new_messages = current_messages[
-            seen_message_count:
-        ]
-
-        for message in new_messages:
-            print_message(message)
-
-        seen_message_count = len(
-            current_messages
-        )
-
-    if final_state is not None:
-
-        session_state.clear()
-        session_state.update(final_state)
-
-
-def main() -> None:
-    print("s07: Skill Loading — catalog in SYSTEM, content on demand")
-    print("输入问题，回车发送。输入 q 退出。\n")
-
-
-    session_state: dict[str, Any] = {
-        "messages": [],
-    }
-
+def agent_loop(messages: list):
     while True:
-        try:
-            query = input(
-                "\033[36ms07 >> \033[0m"
-            )
-
-        except (
-            EOFError,
-            KeyboardInterrupt,
-        ):
-            print()
-            break
-
-        if query.strip().lower() in {
-            "",
-            "q",
-            "exit",
-        }:
-            break
-
-        session_state.setdefault(
-            "messages",
-            [],
-        ).append(
-            {
-                "role": "user",
-                "content": query,
-            }
+        response = client.messages.create(
+            model=MODEL,
+            system=SYSTEM,
+            messages=messages,
+            tools=TOOLS,
+            max_tokens=8000,
         )
+        messages.append({"role": "assistant", "content": response.content})
 
-        try:
-            agent_loop(session_state)
+        tool_calls = [
+            block for block in response.content if block.type == "tool_use"
+        ]
+        if not tool_calls:
+            force = trigger_hooks("Stop", messages)
+            if force:
+                messages.append({"role": "user", "content": force})
+                continue
+            return
 
-        except GraphRecursionError:
-            print(
-                "\nAgent stopped because it reached "
-                "the execution limit."
-            )
-
-        except Exception as exc:
-            print(
-                "\nAgent error: "
-                f"{type(exc).__name__}: {exc}"
-            )
-
-        print()
-
+        results = []
+        for block in tool_calls:
+            output = execute_tool(block)
+            results.append({
+                "type": "tool_result",
+                "tool_use_id": block.id,
+                "content": output,
+            })
+        messages.append({"role": "user", "content": results})
 
 if __name__ == "__main__":
-    main()
+    print("s07: Skill Loading - catalog first, full content on demand")
+    print("Enter a question, press Enter to send. Type q to quit.\n")
+
+    history = []
+    while True:
+        try:
+
+            query = input("\001\033[36m\002s07 >> \001\033[0m\002")
+        except (EOFError, KeyboardInterrupt):
+            break
+        if query.strip().lower() in ("q", "exit", ""):
+            break
+        trigger_hooks("UserPromptSubmit", query)
+        history.append({"role": "user", "content": query})
+        agent_loop(history)
+        for block in history[-1]["content"]:
+            if getattr(block, "type", None) == "text":
+                print(block.text)
+        print()

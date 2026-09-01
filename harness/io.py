@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """统一编码、截断标记、超时与返回码的文件 / shell 工具。"""
 from __future__ import annotations
 
@@ -52,7 +51,7 @@ def run_bash(workdir, command: str, timeout: int = DEFAULT_TIMEOUT) -> str:
     return output
 
 
-def run_read(workdir, raw_path: PathLike, limit: int | None = None) -> str:
+def run_read(workdir, raw_path: paths.PathLike, limit: int | None = None) -> str:
     """读取工作区内的 UTF-8 文本文件，可选限制返回行数。"""
     try:
         lines = read_text_file(paths.safe_path(workdir, raw_path)).splitlines()
@@ -63,25 +62,29 @@ def run_read(workdir, raw_path: PathLike, limit: int | None = None) -> str:
     return "\n".join(lines)
 
 
-def run_write(workdir, raw_path: PathLike, content: str) -> str:
+def run_write(workdir, raw_path: paths.PathLike, content: str) -> str:
     """向工作区内文件写入 UTF-8 文本（覆盖写）。"""
     try:
         file_path = paths.safe_path(workdir, raw_path)
         file_path.parent.mkdir(parents=True, exist_ok=True)
-        file_path.write_text(content, encoding=UTF8)
+        file_path.write_text(content, encoding=UTF8, newline="")
         return f"Wrote {len(content.encode(UTF8))} bytes to {raw_path}"
     except (OSError, ValueError) as exc:
         return f"Error: {exc}"
 
 
-def run_edit(workdir, raw_path: PathLike, old_text: str, new_text: str) -> str:
+def run_edit(
+    workdir, raw_path: paths.PathLike, old_text: str, new_text: str
+) -> str:
     """替换文件中首次出现的 old_text。"""
     try:
         file_path = paths.safe_path(workdir, raw_path)
         current = read_text_file(file_path)
         if old_text not in current:
             return f"Error: old_text was not found in {raw_path}"
-        file_path.write_text(current.replace(old_text, new_text, 1), encoding=UTF8)
+        file_path.write_text(
+            current.replace(old_text, new_text, 1), encoding=UTF8, newline=""
+        )
         return f"Edited {raw_path}"
     except (OSError, ValueError) as exc:
         return f"Error: {exc}"
@@ -93,7 +96,7 @@ def run_glob(workdir, pattern: str, max_results: int = MAX_GLOB_RESULTS) -> str:
         results: list = []
         for match in _glob.glob(pattern, root_dir=Path(workdir), recursive=True):
             if paths.is_within_workspace(workdir, match):
-                results.append(match)
+                results.append(Path(match).as_posix())
             if len(results) >= max_results:
                 results.append(f"...({max_results}+ matches, truncated)")
                 break

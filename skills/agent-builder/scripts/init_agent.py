@@ -3,11 +3,12 @@
 Agent Scaffold Script - Create a new agent project with best practices.
 
 Usage:
-    python init_agent.py <agent-name> [--level 0-1] [--path <output-dir>]
+    python init_agent.py <agent-name> [--level 0-4] [--path <output-dir>]
 
 Examples:
     python init_agent.py my-agent                 # Level 1 (4 tools)
     python init_agent.py my-agent --level 0      # Minimal (bash only)
+    python init_agent.py my-agent --level 2      # With TodoWrite
     python init_agent.py my-agent --path ./bots  # Custom output directory
 """
 
@@ -62,7 +63,7 @@ def run(prompt, history=[]):
             if b.type == "tool_use":
                 print(f"> {{b.input['command']}}")
                 try:
-                    out = subprocess.run(b.input["command"], shell=True, capture_output=True, text=True, timeout=60)
+                    out = subprocess.run(b.input["command"], shell=True, capture_output=True, text=True, errors="replace", timeout=60)
                     output = (out.stdout + out.stderr).strip() or "(empty)"
                 except Exception as e:
                     output = f"Error: {{e}}"
@@ -132,7 +133,7 @@ def execute(name: str, args: dict) -> str:
         if any(d in args["command"] for d in dangerous):
             return "Error: Dangerous command blocked"
         try:
-            r = subprocess.run(args["command"], shell=True, cwd=WORKDIR, capture_output=True, text=True, timeout=60)
+            r = subprocess.run(args["command"], shell=True, cwd=WORKDIR, capture_output=True, text=True, errors="replace", timeout=60)
             return (r.stdout + r.stderr).strip()[:50000] or "(empty)"
         except subprocess.TimeoutExpired:
             return "Error: Timeout (60s)"
@@ -141,7 +142,7 @@ def execute(name: str, args: dict) -> str:
 
     if name == "read_file":
         try:
-            return safe_path(args["path"]).read_text()[:50000]
+            return safe_path(args["path"]).read_text(encoding="utf-8")[:50000]
         except Exception as e:
             return f"Error: {{e}}"
 
@@ -149,7 +150,7 @@ def execute(name: str, args: dict) -> str:
         try:
             p = safe_path(args["path"])
             p.parent.mkdir(parents=True, exist_ok=True)
-            p.write_text(args["content"])
+            p.write_text(args["content"], encoding="utf-8")
             return f"Wrote {{len(args['content'])}} bytes to {{args['path']}}"
         except Exception as e:
             return f"Error: {{e}}"
@@ -157,10 +158,13 @@ def execute(name: str, args: dict) -> str:
     if name == "edit_file":
         try:
             p = safe_path(args["path"])
-            content = p.read_text()
+            content = p.read_text(encoding="utf-8")
             if args["old_text"] not in content:
                 return f"Error: Text not found in {{args['path']}}"
-            p.write_text(content.replace(args["old_text"], args["new_text"], 1))
+            p.write_text(
+                content.replace(args["old_text"], args["new_text"], 1),
+                encoding="utf-8",
+            )
             return f"Edited {{args['path']}}"
         except Exception as e:
             return f"Error: {{e}}"
@@ -216,10 +220,10 @@ MODEL_NAME=claude-sonnet-4-20250514
 def create_agent(name: str, level: int, output_dir: Path):
     """Create a new agent project."""
     # Validate level
-    if level not in TEMPLATES:
+    if level not in TEMPLATES and level not in (2, 3, 4):
         print(f"Error: Level {level} not yet implemented in scaffold.")
         print("Available levels: 0 (minimal), 1 (4 tools)")
-        print("Levels 2-4 (Todo / Subagent / Skills) are not scaffolded yet.")
+        print("For levels 2-4, copy from mini-claude-code repository.")
         sys.exit(1)
 
     # Create output directory
@@ -259,11 +263,13 @@ def main():
 Levels:
   0  Minimal (~50 lines) - Single bash tool, self-recursion for subagents
   1  Basic (~200 lines)  - 4 core tools: bash, read, write, edit
-  2-4 (Todo / Subagent / Skills) - not scaffolded yet
+  2  Todo (~300 lines)   - + TodoWrite for structured planning
+  3  Subagent (~450)     - + Task tool for context isolation
+  4  Skills (~550)       - + Skill tool for domain expertise
         """
     )
     parser.add_argument("name", help="Name of the agent to create")
-    parser.add_argument("--level", type=int, default=1, choices=[0, 1],
+    parser.add_argument("--level", type=int, default=1, choices=[0, 1, 2, 3, 4],
                        help="Complexity level (default: 1)")
     parser.add_argument("--path", type=Path, default=Path.cwd(),
                        help="Output directory (default: current directory)")

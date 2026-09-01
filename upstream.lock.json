@@ -1,0 +1,14 @@
+{
+  "repository": "https://github.com/shareAI-lab/learn-claude-code",
+  "branch": "main",
+  "commit": "08263f49b3d5c895ea61d56a3737d8eebe624f20",
+  "synced_at": "2026-09-01",
+  "scope": "s01 至 s17 的 code.py、中文章节 README、上游机制回归测试与 agent-builder 更新",
+  "local_adaptations": [
+    "以 harness.langchain_messages.LangChainMessagesClient 替换 Anthropic 客户端边界",
+    "使用 OPENAI_API_KEY、BASE_URL、MODEL_ID 和可选的 FALLBACK_MODEL_ID",
+    "README 只保留中文版本",
+    "保留本仓库原有的‘深入 CC 源码’补充",
+    "增加 Windows 文件锁、换行、Bash 与子进程树兼容层"
+  ]
+}

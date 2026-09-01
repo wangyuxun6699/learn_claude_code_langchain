@@ -3,8 +3,9 @@
 > **命名说明**：仓库目录名与 `.env.example` 里的 `langchain4j` 是历史遗留（`LangChain4j` 是 Java 库，与本项目无关）。
 > 本项目是**纯 Python** 实现（LangChain 1.x + LangGraph + OpenAI-compatible ChatModel），仓库内没有任何 Java 文件。
 
-框架选对了，代码量最多可以少一半。这个仓库代码就是基于最热门的agent框架[langchain](https://github.com/langchain-ai/langchain)和[langgraph](https://github.com/langchain-ai/langgraph)来深度拆解最热门的agent产品ClaudeCode
-本项目参考 [shareAI-lab/learn-claude-code](https://github.com/shareAI-lab/learn-claude-code) 的 17 章编排，用 **LangChain 1.x + LangGraph + OpenAI-compatible ChatModel** 重新实现同一组 Agent Harness 概念。
+框架选对了，代码量最多可以少一半。这个仓库基于 [LangChain](https://github.com/langchain-ai/langchain) 和 [LangGraph](https://github.com/langchain-ai/langgraph)，深入拆解 Claude Code 这类 coding agent 的 Harness。
+
+本项目已对齐 [shareAI-lab/learn-claude-code](https://github.com/shareAI-lab/learn-claude-code) 的 17 章源码结构（同步基线：`08263f49b3d5c895ea61d56a3737d8eebe624f20`）。章节中的 Agent Loop、工具协议、Hook、Context、Task、Team、Workflow 与 Goal 实现保留上游结构；本地适配主要集中在模型调用边界，由 [`harness/langchain_messages.py`](harness/langchain_messages.py) 转换成 **LangChain 1.x + OpenAI-compatible ChatModel** 调用。其余差异仅用于 Windows 文件换行、文件锁、Bash 子进程树回收和从任意工作目录启动章节，不改变各章机制。
 
 > Agency 来自模型，Agent 产品 = 模型 + Harness。
 
@@ -12,25 +13,39 @@
 
 ## 核心模式
 
-参考仓库手写模型/工具循环；LangChain 版本把这段循环交给 `create_agent` 构建的 LangGraph runtime：
+本仓库保留参考实现最重要的显式模型/工具循环。`LangChainMessagesClient` 只负责消息格式和工具 schema 转换，不隐藏循环：
 
 ```python
-import os
+def agent_loop(messages):
+    while True:
+        response = client.messages.create(
+            model=MODEL,
+            system=SYSTEM,
+            messages=messages,
+            tools=TOOLS,
+            max_tokens=8000,
+        )
+        messages.append({"role": "assistant", "content": response.content})
 
-from langchain.agents import create_agent
-from langchain_openai import ChatOpenAI
+        tool_calls = [
+            block for block in response.content
+            if block.type == "tool_use"
+        ]
+        if not tool_calls:
+            return
 
-model = ChatOpenAI(
-    model=os.environ["MODEL_ID"],
-    api_key=os.environ["OPENAI_API_KEY"],
-    base_url=os.environ["BASE_URL"],
-    temperature=0,
-)
-agent = create_agent(model=model, tools=TOOLS, system_prompt=SYSTEM)
-result = agent.invoke({"messages": [{"role": "user", "content": query}]})
+        results = []
+        for block in tool_calls:
+            output = TOOL_HANDLERS[block.name](**block.input)
+            results.append({
+                "type": "tool_result",
+                "tool_use_id": block.id,
+                "content": output,
+            })
+        messages.append({"role": "user", "content": results})
 ```
 
-模型输出 `tool_calls` 时，runtime 执行工具并追加 `ToolMessage`，然后再次调用模型；模型不再调用工具时，本轮结束。后续章节都在这个闭环上增加 middleware、state 和持久化机制。
+模型输出 `tool_use` 内容块时，Harness 执行工具并追加 `tool_result`，然后再次调用模型；没有真实工具调用块时，本轮结束。适配层内部再把它们映射为 LangChain 的 `AIMessage` / `ToolMessage`。后续章节围绕这段闭环加入权限、Hook、Context、持久化和协作机制。
 
 ### Agency 从哪来
 
@@ -126,6 +141,9 @@ Claude Code = 一个 agent loop
             + 异步邮箱的团队协调
             + worktree 隔离的并行执行
             + 权限治理
+            + Hook 扩展系统
+            + 长期记忆
+            + MCP 外部能力路由
 ```
 
 就这些。这就是全部架构。每一个组件都是 harness 机制 -- 为 agent 构建的栖居世界的一部分。Agent 本身呢？是 Claude。一个模型。由 Anthropic 在人类推理和代码的全部广度上训练而成。Harness 没有让 Claude 变聪明。Claude 本来就聪明。Harness 给了 Claude 双手、双眼和一个工作空间。
@@ -167,7 +185,7 @@ Claude Code = 一个 agent loop
 
     User --> messages[] --> LLM --> response
                                       |
-                            stop_reason == "tool_use"?
+                            包含 tool_use 内容块？
                            /                          \
                          yes                           no
                           |                             |
@@ -229,19 +247,45 @@ Claude Code = 一个 agent loop
 本仓库是一个 0->1 的 harness 工程学习项目 -- 构建围绕 agent 模型的工作环境。
 为保证学习路径清晰，仓库有意简化或省略了部分生产机制：
 
-- 完整事件 / Hook 总线 (例如 PreToolUse、SessionStart/End、ConfigChange)。
-  s10 仅提供教学用途的最小 append-only 生命周期事件流。
-- 基于规则的权限治理与信任流程
-- 会话生命周期控制 (resume/fork) 与更完整的 worktree 生命周期控制
-- 完整 MCP 运行时细节 (transport/OAuth/资源订阅/轮询)
+- Hook 只展开课程需要的 UserPromptSubmit、PreToolUse、PostToolUse、Stop 等关键事件，不覆盖生产产品的完整事件总线。
+- Permission 演示 deny、规则匹配和用户确认；它不是沙箱，也不等价于完整的组织策略与信任治理。
+- s13 实现任务绑定 Worktree、持久队友、邮箱和计划/关机协议，但仍是教学运行时，不是对任何产品内部实现的声明。
+- MCP 聚焦工具发现、命名空间、宿主权限和动态工具池，省略真实 transport、OAuth、资源/提示订阅与重连细节。
+- s16 Workflow 与 s17 Goal 是机制示例：前者扩展 s15 宿主，后者从 s04 基础内核独立演示停止门控；它们不是声称 Claude Code 存在同名内置工具。
 
 仓库中的团队 JSONL 邮箱协议是教学实现，不是对任何特定生产内部实现的声明。
+
+## 上游对齐与章节继承关系
+
+课程的阅读顺序是 s01 → s17，但源码并不是“后一章永远复制前一章的全部能力”。上游为了隔离单一机制，存在多条从 s04 基础内核分出的教学支线；只有 s15 会把需要的机制重新接回同一个完整 Harness。当前代码按以下关系对齐：
+
+| 章节 | 代码基线 | 本章加入或组合的机制 |
+|---|---|---|
+| s01 | 最小内核 | 显式 Agent Loop + Bash |
+| s02 | s01 | 多工具与 dispatch map，循环不变 |
+| s03 | s02 | 三段式权限检查 |
+| s04 | s03 | 把权限与扩展逻辑移入 Hook |
+| s05 | s04 | TodoWrite |
+| s06 | s04 基础内核 | 一次性、隔离上下文的 Subagent |
+| s07 | s04 基础内核 | Skill 目录与按需加载 |
+| s08 | s04 基础内核 | 上下文预算、裁剪、微压缩与摘要 |
+| s09 | s04 基础内核 | 跨会话 Memory 的选择、提取与整理 |
+| s10 | s04 基础内核 | 持久 Task 图、依赖、认领与完成 |
+| s11 | s04 基础内核 | Background Task 与完成通知；不继承 s10 |
+| s12 | s04 基础内核 | Cron、持久化与至少一次交付；不继承 s11 |
+| s13 | s10 | Task + 持久队友 + 邮箱协议 + Worktree；不带入 s11/s12 |
+| s14 | s04 基础内核 | MCP 工具发现、命名空间和动态工具池 |
+| s15 | 集成章 | Skills、Context、Memory、Task、Background、Cron、Teams、Worktree、MCP 回到一个循环 |
+| s16 | s15 宿主 | 追加 `Workflow` 工具、journal、resume 与结构化校验 |
+| s17 | s04 基础内核 | 独立 Goal evaluator 控制真正停止，与 s16 形成“如何做/是否完成”的概念衔接 |
+
+`code.py` 是同步后的带注释主实现；`code_uncommented.py` 由 [`scripts/build_uncommented.py`](scripts/build_uncommented.py) 从同一源码生成。章节中文 README 以同期上游 `README.zh.md` 为主体，并保留本仓库原有的“深入 Claude Code 源码”补充；合并工具见 [`scripts/merge_chapter_readmes.py`](scripts/merge_chapter_readmes.py)。
 
 
 
 ## 学习路径
 
-主线：能动手 → 能做复杂任务 → 能记住和恢复 → 能长期运行 → 能协作 → 能扩展并合体
+主线：能动手 → 能做复杂任务 → 能记住和恢复 → 能长期运行 → 能协作 → 能扩展并合体 → 编排并完成
 
 ```mermaid
 flowchart TD
@@ -370,13 +414,13 @@ BASE_URL=https://your-openai-compatible-endpoint/v1
 
 ### 安全边界
 
-`run_bash` 的 `shell=True` 仅为教学演示：它把模型输出直接交给 shell，**黑名单 / 路径检查不等于安全边界**。所有章节统一复用 [harness/security.py](harness/security.py) 的大小写不敏感拒绝策略与 [harness/paths.py](harness/paths.py) 的工作区约束（s09/s12/s13 经 s08/s11 间接复用）；生产环境请改用默认拒绝的权限中间件 + 沙箱 / 容器。
+`run_bash` 的 `shell=True` 仅为教学演示：它把模型输出直接交给 shell，**黑名单 / 路径检查不等于安全边界**。为保持与上游逐章源码的对应关系，每章在本章文件内保留相应权限和路径逻辑；[`harness/security.py`](harness/security.py) 与 [`harness/paths.py`](harness/paths.py) 则供本仓库公共工具和独立测试使用。生产环境请改用默认拒绝的权限中间件 + 沙箱 / 容器。
 
 ### 测试与 CI
 
 ```bash
 pip install -r requirements-dev.txt  # pytest + ruff
-pytest -q                            # 冒烟(py_compile 全部章节) + harness 单测
+pytest -q                            # 17 章机制、集成边界与 harness 完整回归
 ruff check harness tests             # 只 lint 公共内核与测试
 ```
 
@@ -453,4 +497,4 @@ learn_claude_code/
 
 ## 说明与致谢
 
-章节命名、教学脉络、插图和“深入 CC 源码”内容来自或改编自 [shareAI-lab/learn-claude-code](https://github.com/shareAI-lab/learn-claude-code)，原项目采用 MIT License。LangChain 实现代码以本目录现有脚本为准；两者行为不完全等价，README 会明确指出未完成部分。
+章节命名、教学脉络、主实现与插图来自或改编自 [shareAI-lab/learn-claude-code](https://github.com/shareAI-lab/learn-claude-code)，原项目采用 MIT License。当前 17 章主实现对齐上游同步基线；模型供应商边界由本仓库的 LangChain 适配层替换，章节 README 末尾继续保留本仓库原有的 Claude Code 源码研读补充。教学实现不等于 Claude Code 产品源码，具体简化边界以各章说明为准。

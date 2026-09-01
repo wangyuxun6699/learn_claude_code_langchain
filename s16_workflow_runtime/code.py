@@ -1,605 +1,921 @@
-"""s16: Workflow Runtime -- 固定编排写进代码，journal 支持断点续跑。
+#!/usr/bin/env python3
+"""
+s16: Workflow Runtime - run a saved orchestration through one tool call.
 
-一句话：一个 tool_use 跑完一整套编排。
+Run:
+  python s16_workflow_runtime/code.py
+  python s16_workflow_runtime/code.py demo
+  python s16_workflow_runtime/code.py resume
 
-s01–s15 里每一步都由模型决定调用哪个工具；结果进 messages，模型根据新上下文决定下一步。
-当任务是一段“固定序列”（例如对多个维度并行审查、逐条核验、去重合并）时，编排顺序是事先已知的，
-此时宿主要三样东西：并行、稳定的结果结构、可恢复（中断不重跑已完成的部分）。
-
-本章给 harness 加一个 Workflow 工具：host 注册可信脚本，脚本用 agent()/parallel()/pipeline()/phase()
-把编排写死在代码里。运行过程把每个 agent() 结果按行写进 journal；用 resume_from_run_id 续跑时，
-内容未变的调用直接命中 journal 缓存，只重跑变化的部分及其下游。
-
-模型只提供已保存的 workflow 名字 + 参数 + 可选 runId，不发送任何可执行代码。
+    +-------------+       +--------------------------------+
+    | Agent loop  | ----> | Workflow(name, args, run_id)  |
+    +-------------+       +---------------+----------------+
+                                          |
+                           +--------------+--------------+
+                           | agent | parallel | pipeline  |
+                           +--------------+--------------+
+                                          |
+                                   journal + result
 """
 
-import os
-import sys
-import json
-import re
-import time
-import uuid
-import hashlib
 import asyncio
+import hashlib
+import importlib.util
+import json
+import os
+import re
+import secrets
+import sys
+import threading
+from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
-from dotenv import load_dotenv
-from harness.paths import safe_path
-from langchain_openai import ChatOpenAI
-from langchain_core.tools import tool
-from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
-from langchain.agents import create_agent
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
-load_dotenv(override=True)
+try:
+    import fcntl
+except ImportError:
+    import msvcrt
 
-MODEL_ID = os.getenv("MODEL_ID")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-OPENAI_BASE_URL = os.getenv("BASE_URL")
+    class _FcntlCompat:
+        LOCK_EX = 1
+        LOCK_NB = 4
+        LOCK_UN = 8
 
-# 运行产物目录：快照 / 输出 / journal / lock 都放在本章目录下的 .runtime/。
-RUNTIME_DIR = Path(__file__).resolve().parent / ".runtime"
+        @staticmethod
+        def flock(file_descriptor: int, operation: int) -> None:
+            position = os.lseek(file_descriptor, 0, os.SEEK_CUR)
+            try:
+                if os.fstat(file_descriptor).st_size == 0:
+                    os.lseek(file_descriptor, 0, os.SEEK_SET)
+                    os.write(file_descriptor, b"\0")
+                os.lseek(file_descriptor, 0, os.SEEK_SET)
+                if operation & _FcntlCompat.LOCK_UN:
+                    mode = msvcrt.LK_UNLCK
+                elif operation & _FcntlCompat.LOCK_NB:
+                    mode = msvcrt.LK_NBLCK
+                else:
+                    mode = msvcrt.LK_LOCK
+                try:
+                    msvcrt.locking(file_descriptor, mode, 1)
+                except OSError as error:
+                    if operation & _FcntlCompat.LOCK_NB:
+                        raise BlockingIOError(str(error)) from error
+                    raise
+            finally:
+                os.lseek(file_descriptor, position, os.SEEK_SET)
 
-# run_read 只允许读仓库根目录（工作区）内的文件，防止读任意绝对路径。
-WORKDIR = Path(__file__).resolve().parent.parent
+    fcntl = _FcntlCompat()
+
+# -- Runtime Guards --
+AGENT_CAP = 1000                       # hard cap on agent() calls per run
+CONCURRENCY = 8                        # parallelism cap (semaphore)
+STORE = Path(__file__).parent / ".runtime"   # snapshots + journals live here
+MISS = object()                        # journal cache miss sentinel
+WORKFLOW_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+RUN_ID_RE = re.compile(r"^wf_[A-Za-z0-9][A-Za-z0-9._-]{0,63}_[0-9a-f]{16}$")
 
 
-# ---------------------------------------------------------------------------
-# 结构化输出：不让子 agent 交散文，要在编排边界校验一次、重试一次
-# ---------------------------------------------------------------------------
+def _stable_hash(s: str) -> int:
+    """Process-stable hash (Python's hash() is salted per process, which would
+    break resume keys across `run` and `resume`)."""
+    return int(hashlib.sha256(s.encode()).hexdigest(), 16)
 
+
+def create_run_id(meta) -> str:
+    return f"wf_{meta['name']}_{secrets.token_hex(8)}"
+
+
+def reserve_run_id(meta) -> str:
+    """Reserve a fresh run identity before any journal can be truncated."""
+    STORE.mkdir(parents=True, exist_ok=True)
+    for _ in range(32):
+        run_id = validate_run_id(create_run_id(meta))
+        snapshot_path = STORE / f"{run_id}.json"
+        try:
+            fd = os.open(snapshot_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError:
+            continue
+        os.close(fd)
+        return run_id
+    raise WorkflowInputError("could not allocate a unique workflow runId")
+
+
+def create_task_id(run_id) -> str:
+    return f"local_workflow_{run_id}"
+
+
+def validate_run_id(run_id):
+    if not isinstance(run_id, str) or not RUN_ID_RE.fullmatch(run_id):
+        raise WorkflowInputError("invalid workflow runId")
+    return run_id
+
+
+# -- Errors --
 class WorkflowInputError(Exception):
-    """注册/校验/编排参数错误，统一转成错误结果而不是中断 host 循环。"""
+    """Bad workflow, metadata, or schema input."""
 
 
+_run_locks_guard = threading.Lock()
+_run_locks: dict[str, threading.Lock] = {}
+
+
+@contextmanager
+def workflow_run_lock(run_id: str):
+    """Hold one run across threads and host processes for its full lifecycle."""
+    with _run_locks_guard:
+        local_lock = _run_locks.setdefault(run_id, threading.Lock())
+    if not local_lock.acquire(blocking=False):
+        raise WorkflowInputError(f"workflow run {run_id} is already active")
+
+    handle = None
+    file_locked = False
+    try:
+        STORE.mkdir(parents=True, exist_ok=True)
+        handle = (STORE / f"{run_id}.lock").open("a+", encoding="utf-8")
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            file_locked = True
+        except BlockingIOError as exc:
+            raise WorkflowInputError(
+                f"workflow run {run_id} is already active"
+            ) from exc
+        yield
+    finally:
+        if handle is not None:
+            try:
+                if file_locked:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            finally:
+                handle.close()
+        local_lock.release()
+        with _run_locks_guard:
+            if not local_lock.locked() and _run_locks.get(run_id) is local_lock:
+                _run_locks.pop(run_id, None)
+
+
+# -- Metadata Validation --
+def validate_meta(meta):
+    """Validate name, description, and optional phases before launch."""
+    if not isinstance(meta, dict):
+        raise WorkflowInputError("meta must be an object literal")
+    if not meta.get("name") or not meta.get("description"):
+        raise WorkflowInputError("meta requires `name` and `description`")
+    if not isinstance(meta["name"], str) or not WORKFLOW_NAME_RE.fullmatch(meta["name"]):
+        raise WorkflowInputError(
+            "meta.name must be a 1-64 character slug using letters, numbers, '.', '_', or '-'"
+        )
+    if not isinstance(meta["description"], str):
+        raise WorkflowInputError("meta.description must be a string")
+    if "phases" in meta:
+        if not isinstance(meta["phases"], list) or not all(
+            isinstance(phase, str) and phase for phase in meta["phases"]
+        ):
+            raise WorkflowInputError("meta.phases must be a list of non-empty strings")
+    return meta
+
+
+def check_permission(meta, settings=None):
+    """Apply the s03 allow/deny gate before launching a workflow."""
+    settings = settings or {}
+    if meta["name"] in settings.get("deny", []):
+        raise WorkflowInputError(f"workflow '{meta['name']}' denied by settings")
+    return "allow"
+
+
+# -- Minimal JSON Schema --
 class SimpleJsonSchema:
-    """一个够用的 JSON schema 校验器，覆盖对象/数组/标量/required/enum。"""
+    """Tiny validator backing agent({schema}):
+    object/array/string/boolean/number + required keys."""
 
-    def __init__(self, schema: dict):
+    def __init__(self, schema):
         self.schema = schema
 
-    def validate(self, value: Any):
-        return self._validate(value, self.schema, "#")
-
-    def _validate(self, value: Any, schema: dict, path: str):
-        if not isinstance(schema, dict):
-            return True, ""
-        stype = schema.get("type")
-
-        if stype == "object":
+    def validate(self, value, schema=None):
+        schema = self.schema if schema is None else schema
+        if "enum" in schema and value not in schema["enum"]:
+            return False, f"expected one of {schema['enum']}"
+        t = schema.get("type")
+        if t == "object":
             if not isinstance(value, dict):
-                return False, f"{path} must be an object"
-            props = schema.get("properties", {}) or {}
-            required = schema.get("required", []) or []
-            for k in required:
-                if k not in value:
-                    return False, f"{path} missing required key '{k}'"
-            if schema.get("additionalProperties") is False:
-                for k in value:
-                    if k not in props:
-                        return False, f"{path} unexpected key '{k}'"
-            for k, v in value.items():
-                if k in props:
-                    ok, err = self._validate(v, props[k], f"{path}.{k}")
+                return False, "expected object"
+            for key in schema.get("required", []):
+                if key not in value:
+                    return False, f"missing required key '{key}'"
+            for key, sub in schema.get("properties", {}).items():
+                if key in value:
+                    ok, err = self.validate(value[key], sub)
                     if not ok:
-                        return ok, err
-            return True, ""
-
-        if stype == "array":
+                        return False, f"{key}: {err}"
+            return True, None
+        if t == "array":
             if not isinstance(value, list):
-                return False, f"{path} must be an array"
-            for i, item in enumerate(value):
-                ok, err = self._validate(item, schema.get("items", {}), f"{path}[{i}]")
-                if not ok:
-                    return ok, err
-            return True, ""
-
-        if stype == "string" and not isinstance(value, str):
-            return False, f"{path} must be a string"
-        if stype == "boolean" and not isinstance(value, bool):
-            return False, f"{path} must be a boolean"
-        if stype in ("number", "integer") and (not isinstance(value, (int, float)) or isinstance(value, bool)):
-            return False, f"{path} must be a number"
-
-        enum = schema.get("enum")
-        if enum is not None and value not in enum:
-            return False, f"{path} must be one of {enum}"
-        return True, ""
+                return False, "expected array"
+            items = schema.get("items")
+            if items:
+                for i, el in enumerate(value):
+                    ok, err = self.validate(el, items)
+                    if not ok:
+                        return False, f"[{i}]: {err}"
+            return True, None
+        if t == "string":
+            return (isinstance(value, str), None if isinstance(value, str) else "expected string")
+        if t == "boolean":
+            return (isinstance(value, bool), None if isinstance(value, bool) else "expected boolean")
+        if t in ("number", "integer"):
+            ok = isinstance(value, (int, float)) and not isinstance(value, bool)
+            return (ok, None if ok else "expected number")
+        return True, None
 
 
-def parse_json(raw: Any) -> Any:
-    """把 runner 返回的文本解析成 JSON；容忍粗心的 code fence。"""
-    if isinstance(raw, (dict, list)):
-        return raw
-    text = str(raw).strip()
-    fence = chr(96) * 3
-    if text.startswith(fence):
-        text = re.sub(r"^" + fence + r"[a-zA-Z]*\s*", "", text)
-        text = re.sub(fence + r"\s*$", "", text).strip()
+def _fill_schema(schema, seed):
+    """Deterministic generic filler used for schemas the mock doesn't special-case."""
+    t = schema.get("type")
+    if t == "object":
+        keys = schema.get("required") or list(schema.get("properties", {}))
+        return {k: _fill_schema(schema["properties"][k], f"{seed}/{k}") for k in keys}
+    if t == "array":
+        return [_fill_schema(schema["items"], f"{seed}/0")]
+    if t == "boolean":
+        return _stable_hash(seed) % 4 != 0
+    if t in ("number", "integer"):
+        return _stable_hash(seed) % 5
+    return seed.rsplit("/", 1)[-1]
+
+
+# -- Agent Runners --
+
+
+@dataclass(frozen=True)
+class RunnerOutput:
+    value: object
+    tokens: int
+
+
+class MockAgentRunner:
+    """Deterministic runner used by demo mode and unit tests."""
+
+    def run(self, prompt, schema=None, label=None):
+        if schema is None:
+            value = f"[mock] {(label or prompt)[:60]}"
+            return RunnerOutput(value, self._tokens(prompt, value))
+        props = schema.get("properties", {})
+        if "findings" in props:
+            n = 1 + (_stable_hash(prompt) % 2)
+            sev = ["high", "medium", "low"]
+            value = {"findings": [
+                {"title": f"{label or 'audit'} #{i + 1}",
+                 "severity": sev[_stable_hash(prompt + str(i)) % 3]}
+                for i in range(n)
+            ]}
+        elif "isReal" in props:
+            real = _stable_hash(prompt) % 4 != 0
+            value = {"isReal": real,
+                     "reason": "reproduced" if real else "could not reproduce"}
+        else:
+            value = _fill_schema(schema, prompt)
+        return RunnerOutput(value, self._tokens(prompt, value))
+
+    @staticmethod
+    def _tokens(prompt, result):
+        return len(prompt) // 4 + len(json.dumps(result, default=str)) // 4
+
+
+def _response_text(response) -> str:
+    return "\n".join(
+        str(getattr(block, "text", ""))
+        for block in getattr(response, "content", [])
+        if getattr(block, "type", None) == "text"
+    ).strip()
+
+
+def _parse_runner_json(text: str) -> object:
+    stripped = text.strip()
+    if stripped.startswith("```"):
+        lines = stripped.splitlines()
+        lines = lines[1:] if lines else lines
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        stripped = "\n".join(lines).strip()
     try:
-        return json.loads(text)
-    except Exception as e:
-        raise WorkflowInputError(f"invalid JSON output: {e}")
+        return json.loads(stripped)
+    except json.JSONDecodeError:
+        decoder = json.JSONDecoder()
+        for position, character in enumerate(stripped):
+            if character != "{":
+                continue
+            try:
+                value, _ = decoder.raw_decode(stripped[position:])
+            except json.JSONDecodeError:
+                continue
+            return value
+        raise WorkflowInputError("workflow agent returned invalid JSON")
 
 
-# ---------------------------------------------------------------------------
-# 稳定调用键：不依赖并发完成顺序，缓存才能在续跑时对回同一个调用
-# ---------------------------------------------------------------------------
+class LangChainAgentRunner:
+    """Run workflow agents through the same API client as the host."""
 
-def _stable_hash(text: str) -> int:
-    return int(hashlib.sha256(text.encode("utf-8")).hexdigest(), 16) % (10 ** 10)
+    def __init__(self, client, model):
+        self.client = client
+        self.model = model
+
+    def run(self, prompt, schema=None, label=None):
+        request = prompt
+        if schema is not None:
+            request += (
+                "\n\nReturn only one JSON object matching this schema:\n"
+                + json.dumps(schema, ensure_ascii=True, sort_keys=True)
+            )
+        response = self.client.messages.create(
+            model=self.model,
+            system=(
+                "You are a focused workflow agent. Complete only the supplied "
+                "step. Do not claim access to files or results not included in "
+                "the prompt."
+            ),
+            messages=[{"role": "user", "content": request}],
+            max_tokens=2000,
+        )
+        text = _response_text(response)
+        if schema is None:
+            value = text
+        else:
+            try:
+                value = _parse_runner_json(text)
+            except WorkflowInputError:
+                # Let ExecutionState's schema check trigger its single retry.
+                value = text
+        usage = getattr(response, "usage", None)
+        tokens = int(getattr(usage, "input_tokens", 0) or 0) + int(
+            getattr(usage, "output_tokens", 0) or 0
+        )
+        return RunnerOutput(value, tokens)
 
 
-def make_key(kind: str, label: Any, prompt: str, schema: Any) -> str:
-    basis = f"{kind}|{label}|{prompt}|{json.dumps(schema, sort_keys=True)}"
-    return f"{kind}-{_stable_hash(basis):010d}"
+RUNNER_FACTORY = MockAgentRunner
 
 
-# ---------------------------------------------------------------------------
-# Journal：一行一个 agent() 结果，是 checkpoint 续跑的核心
-# ---------------------------------------------------------------------------
-
-MISS = object()
-
-
+# -- Journal --
 class WorkflowJournal:
-    """追加式 JSONL，把 key -> value 落盘并写进内存 cache。"""
+    """Append-only <runId>.journal.jsonl. On resume, agent() calls whose
+    semantic key is already present are replayed from cache instead of re-run."""
 
-    def __init__(self, path: Path):
-        self.path = path
-        self.cache: dict[str, Any] = {}
-        if path.exists():
-            for line in path.read_text(encoding="utf-8").splitlines():
-                if not line.strip():
-                    continue
-                entry = json.loads(line)
-                self.cache[entry["key"]] = entry["value"]
-        self._f = path.open("a", encoding="utf-8")
+    def __init__(self, run_id, resume, store=None):
+        store = STORE if store is None else store
+        store.mkdir(parents=True, exist_ok=True)
+        self.path = store / f"{run_id}.journal.jsonl"
+        self.resume = resume
+        self.cache = {}
+        if resume:
+            if not self.path.exists():
+                raise WorkflowInputError(f"resume journal not found for {run_id}")
+            for line_number, line in enumerate(self.path.read_text(encoding="utf-8").splitlines(), start=1):
+                try:
+                    rec = json.loads(line)
+                    if (
+                        not isinstance(rec, dict)
+                        or not isinstance(rec.get("key"), str)
+                        or "value" not in rec
+                    ):
+                        raise ValueError("expected key/value record")
+                except (json.JSONDecodeError, ValueError) as exc:
+                    raise WorkflowInputError(
+                        f"invalid resume journal record at line {line_number}"
+                    ) from exc
+                self.cache[rec["key"]] = rec["value"]
+            self._f = self.path.open("a", encoding="utf-8")
+        else:
+            self._f = self.path.open("w", encoding="utf-8")             # fresh run truncates
 
-    def record(self, key: str, value: Any):
+    def key(self, kind, label, prompt, schema):
+        # Deterministic semantic key, independent of concurrency order, so a
+        # parallel/pipeline call gets the same key on resume.
+        basis = f"{kind}|{label}|{prompt}|{json.dumps(schema, sort_keys=True)}"
+        return f"{kind}-{_stable_hash(basis) % 10**10:010d}"
+
+    def cached(self, key):
+        return self.cache.get(key, MISS)
+
+    def record(self, key, value):
         self._f.write(json.dumps({"key": key, "value": value}) + "\n")
         self._f.flush()
         self.cache[key] = value
-
-    def cached(self, key: str):
-        return self.cache.get(key, MISS)
 
     def close(self):
         self._f.close()
 
 
-# ---------------------------------------------------------------------------
-# 任务状态与进度事件
-# ---------------------------------------------------------------------------
+# -- Token Budget --
+class Budget:
+    """budget.total / spent() / remaining(). Once spent reaches total, agent()
+    calls raise instead of silently overspending."""
 
+    def __init__(self, total=None):
+        self.total = total
+        self._spent = 0
+
+    def add(self, n):
+        if self.total is not None and self._spent + n > self.total:
+            raise WorkflowInputError(
+                f"token budget exceeded ({self._spent + n} > {self.total})"
+            )
+        self._spent += n
+
+    def spent(self):
+        return self._spent
+
+    def remaining(self):
+        return float("inf") if self.total is None else max(0, self.total - self._spent)
+
+
+# -- Workflow Task Lifecycle --
 class LocalWorkflowTask:
-    def __init__(self, name: str, run_id: str):
-        self.name = name
+    """Hold workflow status, usage, and progress events."""
+
+    def __init__(self, task_id, run_id, meta):
+        self.task_id = task_id
         self.run_id = run_id
-        self.status = "created"
-        self.progress: list[dict] = []
-        self.agents = 0
-        self.tokens = 0
+        self.meta = meta
+        self.status = "running"
+        self.usage = {"agents": 0, "tokens": 0}
+        self.progress = []
 
-    def progress_event(self, ptype: str, **data):
-        event = {"type": ptype, **data}
-        self.progress.append(event)
-        payload = " ".join(f"{k}={v}" for k, v in data.items())
-        print(f"  progress   {ptype} {payload}".rstrip())
+    def event(self, name, **data):
+        line = " ".join(f"{k}={v}" for k, v in data.items())
+        print(f"  event      {name:<18} {line}")
 
-    def serialize(self) -> dict:
-        return {
-            "name": self.name,
-            "runId": self.run_id,
-            "status": self.status,
-            "agents": self.agents,
-            "tokens": self.tokens,
-            "events": sum(1 for p in self.progress if p["type"] in ("workflow_agent",)),
-        }
+    def progress_event(self, ptype, **data):
+        self.progress.append({"type": ptype, **data})
+        line = " ".join(f"{k}={v}" for k, v in data.items())
+        print(f"  progress   {ptype:<16} {line}")
 
 
-# ---------------------------------------------------------------------------
-# Runner：agent() 的边界。live 走真实 API；mock 用固定数据便于复现/单测。
-# ---------------------------------------------------------------------------
-
-class LiveAgentRunner:
-    def run(self, prompt: str, schema: Any, label: Any) -> str:
-        system = "You are a workflow agent. Return ONLY valid JSON (no prose, no code fences)."
-        if schema:
-            system += f"\nSchema: {json.dumps(schema)}"
-        model = ChatOpenAI(
-            model=MODEL_ID, max_completion_tokens=4000, temperature=0,
-            api_key=OPENAI_API_KEY, base_url=OPENAI_BASE_URL,
-        )
-        response = model.invoke([SystemMessage(content=system), HumanMessage(content=prompt)])
-        return str(response.content)
-
-
-class MockAgentRunner:
-    """确定性 fixture：审计返回 N 条发现，核验用 label 的稳定哈希决定 isReal。"""
+# -- Workflow Primitives --
+class ExecutionLimits:
+    """Shared run-wide limits, including nested workflows."""
 
     def __init__(self):
-        self.calls = 0
+        self.agents = 0
+        self.semaphore = asyncio.Semaphore(CONCURRENCY)
 
-    def run(self, prompt: str, schema: Any, label: Any) -> str:
-        self.calls += 1
-        if str(label).startswith("audit:"):
-            dim = str(label).split(":", 1)[1]
-            return json.dumps({"findings": [
-                {"title": f"{dim} issue A", "description": f"a {dim} concern"},
-                {"title": f"{dim} issue B", "description": f"another {dim} concern"},
-            ]})
-        if str(label).startswith("verify:"):
-            is_real = (_stable_hash(str(label)) % 2) == 0
-            return json.dumps({"isReal": is_real})
-        return json.dumps({"findings": []})
+    def claim_agent(self):
+        self.agents += 1
+        if self.agents > AGENT_CAP:
+            raise WorkflowInputError(f"agent() cap reached ({AGENT_CAP})")
 
-
-# ---------------------------------------------------------------------------
-# ExecutionState：编排原语。脚本不直接读文件/跑 shell，只通过这些原语干活。
-# ---------------------------------------------------------------------------
 
 class ExecutionState:
-    def __init__(self, journal: WorkflowJournal, runner, task: LocalWorkflowTask, resume_run_id=None):
+    """Injected into the workflow script with the orchestration primitives."""
+
+    def __init__(self, task, journal, runner, budget, args, depth=0, limits=None):
+        self.task = task
         self.journal = journal
         self.runner = runner
-        self.task = task
-        self.resume_run_id = resume_run_id
+        self.budget = budget
+        self.args = args
+        self._depth = depth
+        self._phase = None
+        self._phases_seen = set()
+        self._limits = limits or ExecutionLimits()
 
-    def phase(self, title: str):
-        self.task.progress_event("phase", phase=title)
+    def phase(self, title):
+        """Start a phase; subsequent agent()s group under it. Upsert: emitting the
+        same phase again (e.g. from each pipeline item) does not re-announce it."""
+        self._phase = title
+        if title not in self._phases_seen:
+            self._phases_seen.add(title)
+            self.task.progress_event("workflow_phase", title=title)
 
-    def log(self, message: str):
-        self.task.progress_event("log", message=message)
+    def log(self, message):
+        """Emit a workflow_log progress line."""
+        self.task.progress_event("workflow_log", message=message)
 
-    async def agent(self, prompt: str, schema: Any = None, label: Any = None, phase: str | None = None):
-        if phase:
-            self.phase(phase)
-        key = make_key("agent", label, prompt, schema)
+    async def agent(self, prompt, schema=None, label=None, phase=None):
+        """Spawn one subagent. With a schema, force StructuredOutput + validate
+        (retry once). On resume, a cached key short-circuits the run."""
+        label = label or (prompt[:24] + "...")
+        self._limits.claim_agent()
+        if self.budget.remaining() <= 0:
+            raise WorkflowInputError("token budget exceeded")
 
+        key = self.journal.key("agent", label, prompt, schema)
         cached = self.journal.cached(key)
         if cached is not MISS:
-            self.task.progress_event("workflow_agent", label=label, status="cached")
+            if schema is not None:
+                ok, err = SimpleJsonSchema(schema).validate(cached)
+                if not ok:
+                    raise WorkflowInputError(
+                        f"cached agent output failed schema validation: {err}"
+                    )
+            self.task.progress_event("workflow_agent", label=label,
+                                     phase=phase or self._phase, status="cached")
             return cached
 
-        self.task.progress_event("workflow_agent", label=label, status="started")
-        result = await self._run_and_validate(prompt, schema, label)
-        self.journal.record(key, result)
-        self.task.agents += 1
-        self.task.tokens += len(str(result))
-        self.task.progress_event("workflow_agent", label=label, status="done")
-        return result
-
-    async def _run_and_validate(self, prompt: str, schema: Any, label: Any):
-        run = await asyncio.to_thread(self.runner.run, prompt, schema, label)
-        value = parse_json(run)
+        async with self._limits.semaphore:
+            run = await asyncio.to_thread(
+                self.runner.run, prompt, schema, label
+            )
+            result = run.value
+            tokens = run.tokens
 
         if schema is not None:
-            ok, err = SimpleJsonSchema(schema).validate(value)
+            ok, err = SimpleJsonSchema(schema).validate(result)
             if not ok:
-                # 校验失败：追加提醒重试一次，仍失败则抛错。
-                run2 = await asyncio.to_thread(
-                    self.runner.run, prompt + "\n\nReturn valid JSON matching the schema.", schema, label
+                retry = await asyncio.to_thread(
+                    self.runner.run,
+                    prompt + "\n\nReturn valid JSON.",
+                    schema,
+                    label,
                 )
-                value = parse_json(run2)
-                ok, err = SimpleJsonSchema(schema).validate(value)
+                result = retry.value
+                tokens += retry.tokens
+                ok, err = SimpleJsonSchema(schema).validate(result)
                 if not ok:
-                    raise WorkflowInputError(f"agent(label={label}) returned invalid output: {err}")
-        return value
+                    raise WorkflowInputError(f"agent({{schema}}) invalid output: {err}")
+
+        self.budget.add(tokens)
+        self.task.usage["agents"] += 1
+        self.task.usage["tokens"] += tokens
+        self.journal.record(key, result)
+        self.task.progress_event("workflow_agent", label=label,
+                                 phase=phase or self._phase, status="done")
+        return result
 
     async def parallel(self, thunks):
-        """屏障式并行：所有任务并发跑完，等最后一个返回。"""
-        return await asyncio.gather(*[t() for t in thunks])
+        """BARRIER: run all thunks concurrently and fail if any thunk fails."""
+        return await asyncio.gather(*[thunk() for thunk in thunks])
 
     async def pipeline(self, items, *stages):
-        """无屏障流水线：每个 item 独立走完整段阶段，互不等待。"""
+        """Per-item staged flow, NO barrier between stages: item A can be in
+        stage 3 while item B is still in stage 1. Each stage gets
+        (prev_result, original_item, index). A throwing stage fails the workflow."""
         async def run_item(item, idx):
             value = item
             for stage in stages:
                 value = await stage(value, item, idx)
             return value
-
         return await asyncio.gather(*[run_item(it, i) for i, it in enumerate(items)])
 
-    async def workflow(self, name: str, args: dict | None = None):
-        """一层嵌套子 workflow，共享同一个 journal / runner。"""
-        entry = WORKFLOWS.get(name)
-        if not entry:
+    async def workflow(self, name, args=None):
+        """Run a saved workflow inline as a child (one level), sharing this run's
+        journal + budget + agent counter."""
+        if self._depth >= 1:
+            raise WorkflowInputError("workflow() nesting is one level only")
+        if name not in WORKFLOWS:
             raise WorkflowInputError(f"unknown workflow '{name}'")
-        _, script_fn = entry
-        sub_task = LocalWorkflowTask(name=name, run_id=self.task.run_id + "-sub")
-        sub_ctx = ExecutionState(self.journal, self.runner, sub_task, self.resume_run_id)
-        return await script_fn(sub_ctx, args or {})
+        meta, fn = WORKFLOWS[name]
+        child = ExecutionState(self.task, self.journal, self.runner, self.budget,
+                               args or {}, depth=self._depth + 1,
+                               limits=self._limits)
+        return await fn(child, args or {})
 
 
-# ---------------------------------------------------------------------------
-# Workflow 元数据与注册表
-# ---------------------------------------------------------------------------
+# -- Workflow Tool --
+class WorkflowTool:
+    """The Workflow tool. .call() validates meta, runs the permission check,
+    creates runId/taskId, registers a LocalWorkflowTask, and emits lifecycle
+    events while executing the script. It returns the result and task state and
+    supports resume."""
 
-WORKFLOW_NAME_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
+    async def call(self, meta, script_fn, args=None, resume_from_run_id=None):
+        validate_meta(meta)
+        check_permission(meta)
+        resuming = resume_from_run_id is not None
+        if resuming:
+            run_id = validate_run_id(resume_from_run_id)
+        else:
+            run_id = reserve_run_id(meta)
+        with workflow_run_lock(run_id):
+            return await self._call_locked(
+                meta, script_fn, args, run_id, resuming
+            )
+
+    async def _call_locked(self, meta, script_fn, args, run_id, resuming):
+        if resuming:
+            snapshot = _read_snapshot(run_id)
+            if snapshot.get("workflowName") != meta["name"]:
+                raise WorkflowInputError("resume runId does not match workflow meta")
+            saved_args = snapshot.get("args", {})
+            if args is None:
+                args = saved_args
+            elif args != saved_args:
+                raise WorkflowInputError("resume args do not match the original run")
+            journal = WorkflowJournal(run_id, resume=True)
+        else:
+            args = args or {}
+            journal = WorkflowJournal(run_id, resume=False)
+        task_id = create_task_id(run_id)
+
+        task = LocalWorkflowTask(task_id, run_id, meta)
+        # Record the launch envelope before workflow execution starts.
+        launched = {"status": "async_launched", "taskId": task_id,
+                    "taskType": "local_workflow", "runId": run_id,
+                    "workflowName": meta["name"]}
+        task.event("async_launched", runId=run_id, taskId=task_id)
+        task.event("task_started", workflow=meta["name"],
+                   phases=",".join(meta.get("phases", [])) or "-",
+                   resume=resuming)
+        _write_json(STORE / f"{run_id}.json", {
+            "runId": run_id,
+            "workflowName": meta["name"],
+            "args": args,
+            "task": serialize_task(task),
+        })
+
+        try:
+            ctx = ExecutionState(
+                task, journal, RUNNER_FACTORY(), Budget(args.get("budget")), args
+            )
+            result = await script_fn(ctx, args)
+            task.status = "completed"
+        except Exception as e:                          # failed / stopped close the loop too
+            task.status = "failed"
+            result = {"error": str(e)}
+        finally:
+            journal.close()
+
+        _write_json(STORE / f"{run_id}.output.json", result)
+        _write_json(STORE / f"{run_id}.json", {
+            "runId": run_id,
+            "workflowName": meta["name"],
+            "args": args,
+            "task": serialize_task(task),
+        })
+        _save_last_run(run_id)
+        task.event("task_notification", status=task.status,
+                   agents=task.usage["agents"], tokens=task.usage["tokens"],
+                   outputFile=f".runtime/{run_id}.output.json")
+        return {"launched": launched, "result": result, "task": task}
 
 
-def validate_meta(meta: dict) -> dict:
-    if not isinstance(meta, dict):
-        raise WorkflowInputError("meta must be an object literal")
-    if not meta.get("name") or not meta.get("description"):
-        raise WorkflowInputError("meta requires name and description")
-    if not isinstance(meta["name"], str) or not WORKFLOW_NAME_RE.fullmatch(meta["name"]):
-        raise WorkflowInputError("meta.name must be a safe 1-64 character slug")
-    if "phases" in meta and (
-        not isinstance(meta["phases"], list)
-        or not all(isinstance(p, str) and p for p in meta["phases"])
-    ):
-        raise WorkflowInputError("meta.phases must contain non-empty strings")
-    return meta
+def _write_json(path, value):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(json.dumps(value, indent=2, default=str), encoding="utf-8", newline="")
+    os.replace(temporary, path)
 
 
-# 示例 workflow 的 schema。
+def _read_snapshot(run_id):
+    path = STORE / f"{run_id}.json"
+    if not path.exists():
+        raise WorkflowInputError(f"resume snapshot not found for {run_id}")
+    try:
+        snapshot = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise WorkflowInputError(f"invalid resume snapshot for {run_id}") from exc
+    if not isinstance(snapshot, dict):
+        raise WorkflowInputError(f"invalid resume snapshot for {run_id}")
+    return snapshot
+
+
+def _save_last_run(run_id):
+    (STORE / "last_run.txt").write_text(run_id, encoding="utf-8", newline="")
+
+
+def _read_last_run():
+    p = STORE / "last_run.txt"
+    return p.read_text(encoding="utf-8").strip() if p.exists() else None
+
+
+# -- Sample Workflow --
 FINDINGS_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "findings": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "title": {"type": "string"},
-                    "description": {"type": "string"},
-                },
-                "required": ["title", "description"],
+    "type": "object", "required": ["findings"],
+    "properties": {"findings": {"type": "array", "items": {
+        "type": "object", "required": ["title", "severity"],
+        "properties": {
+            "title": {"type": "string"},
+            "severity": {
+                "type": "string", "enum": ["high", "medium", "low"]
             },
-        }
-    },
-    "required": ["findings"],
+        }}}},
 }
-
 VERDICT_SCHEMA = {
-    "type": "object",
-    "properties": {"isReal": {"type": "boolean"}},
-    "required": ["isReal"],
+    "type": "object", "required": ["isReal", "reason"],
+    "properties": {"isReal": {"type": "boolean"}, "reason": {"type": "string"}},
 }
-
-DIMENSIONS = ["security", "performance", "maintainability"]
-
-
-async def sample_workflow(ctx: ExecutionState, args: dict):
-    """review-changes：每个维度独立走 audit -> verify，去重后返回确认的真实问题。"""
-    ctx.phase("Review")
-    changes = args.get("changes", "")
-
-    async def audit(_v, dimension, _i):
-        out = await ctx.agent(
-            f"Inspect this change for {dimension} issues:\n{changes}",
-            schema=FINDINGS_SCHEMA, label=f"audit:{dimension}", phase="Review",
-        )
-        return {"dimension": dimension, "findings": out["findings"]}
-
-    async def verify(audited, dimension, _i):
-        ctx.phase("Verify")
-        verdicts = await ctx.parallel([
-            (lambda f=f: ctx.agent(
-                f"Verify this finding against the change:\n{changes}\n\n{f}",
-                schema=VERDICT_SCHEMA, label=f"verify:{dimension}:{f['title']}",
-            ))
-            for f in audited["findings"]
-        ])
-        return {
-            "dimension": dimension,
-            "confirmed": [f for f, v in zip(audited["findings"], verdicts) if v and v.get("isReal")],
-        }
-
-    results = await ctx.pipeline(DIMENSIONS, audit, verify)
-    confirmed = [f for r in results if r for f in r["confirmed"]]
-    ctx.log(f"Confirmed {len(confirmed)} real issue(s)")
-    return {"confirmed": confirmed}
-
 
 SAMPLE_META = {
     "name": "review-changes",
-    "description": "Review code changes across dimensions and verify findings",
+    "description": "Review changed files across dimensions, verify each finding",
     "phases": ["Review", "Verify"],
 }
 
-WORKFLOWS = {"review-changes": (SAMPLE_META, sample_workflow)}
+DIMENSIONS = ["correctness", "security", "performance", "style"]
+DEMO_CHANGES = (
+    "def load_user(user_id):\n"
+    "    query = f\"SELECT * FROM users WHERE id = {user_id}\"\n"
+    "    return db.execute(query).fetchone()\n"
+)
 
 
-# ---------------------------------------------------------------------------
-# WorkflowTool：一次调用 = 一次完整运行（快照 + journal + 续跑）
-# ---------------------------------------------------------------------------
+async def sample_workflow(ctx, args):
+    """pipeline over review dimensions (audit -> verify-each), then keep only the
+    findings a verifier confirms. The plan is code, not a chat turn."""
+    ctx.phase("Review")
+    changes = args.get("changes", "")
+    if not isinstance(changes, str):
+        raise WorkflowInputError("args.changes must be a string")
+    review_input = changes.strip() or "No change context was supplied."
 
-class WorkflowTool:
-    def run(self, meta: dict, script_fn, args: dict | None = None, resume_from_run_id: str | None = None) -> dict:
-        validate_meta(meta)
-        args = args or {}
+    async def audit(_value, dimension, _idx):
+        out = await ctx.agent(
+            f"Review this change context for {dimension} issues. "
+            "Report only issues supported by the supplied text.\n\n"
+            f"{review_input}",
+            schema=FINDINGS_SCHEMA, label=f"audit:{dimension}", phase="Review")
+        return {"dimension": dimension, "findings": out["findings"]}
 
-        if resume_from_run_id:
-            run_id = resume_from_run_id
-            if not self._snapshot_exists(run_id):
-                raise WorkflowInputError(f"unknown resume_from_run_id '{run_id}'")
-        else:
-            run_id = self._reserve_run_id(meta)
+    async def verify(audited, dimension, _idx):
+        ctx.phase("Verify")
+        # Each finding is verified by its own adversarial subagent, concurrently.
+        verdicts = await ctx.parallel([
+            (lambda f=f: ctx.agent(
+                f"Adversarially verify this {dimension} finding against the "
+                "supplied change context.\n\n"
+                f"Change context:\n{review_input}\n\n"
+                f"Finding:\n{json.dumps(f, ensure_ascii=True)}",
+                schema=VERDICT_SCHEMA, label=f"verify:{dimension}:{f['title']}", phase="Verify"))
+            for f in audited["findings"]])
+        confirmed = [f for f, v in zip(audited["findings"], verdicts)
+                     if v and v.get("isReal")]
+        return {"dimension": dimension, "confirmed": confirmed}
 
-        journal = WorkflowJournal(self._journal_path(run_id))
-        task = LocalWorkflowTask(name=meta["name"], run_id=run_id)
-        task.status = "running"
-        task.progress_event("task_started", name=meta["name"], runId=run_id)
-
-        ctx = ExecutionState(journal, RUNNER, task, resume_from_run_id)
-        try:
-            result = asyncio.run(script_fn(ctx, args))
-            task.status = "completed"
-        except Exception as e:
-            task.status = "failed"
-            result = {"error": f"{type(e).__name__}: {e}"}
-
-        journal.close()
-        self._write_output(run_id, result)
-        self._write_snapshot(run_id, meta, args, task)
-        task.progress_event("task_notification", status=task.status, files=self._run_files(run_id))
-
-        return {
-            "launched": {"runId": run_id, "name": meta["name"]},
-            "result": result,
-            "task": task.serialize(),
-        }
-
-    def _lock_path(self, run_id): return RUNTIME_DIR / f"{run_id}.lock"
-
-    def _journal_path(self, run_id): return RUNTIME_DIR / f"{run_id}.journal.jsonl"
-
-    def _snapshot_path(self, run_id): return RUNTIME_DIR / f"{run_id}.json"
-
-    def _output_path(self, run_id): return RUNTIME_DIR / f"{run_id}.output.json"
-
-    def _reserve_run_id(self, meta) -> str:
-        RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
-        for _ in range(100):
-            run_id = f"{meta['name']}-{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}"
-            try:
-                # 独占创建 lock 文件：另一个进程无法再用同一个 runId 续跑。
-                self._lock_path(run_id).open("x").close()
-                return run_id
-            except FileExistsError:
-                continue
-        raise WorkflowInputError("could not reserve a fresh run id")
-
-    def _snapshot_exists(self, run_id) -> bool:
-        return self._snapshot_path(run_id).exists()
-
-    def _run_files(self, run_id) -> list:
-        return [p.name for p in RUNTIME_DIR.glob(f"{run_id}*")]
-
-    def _write_output(self, run_id, result):
-        self._output_path(run_id).write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
-
-    def _write_snapshot(self, run_id, meta, args, task):
-        self._snapshot_path(run_id).write_text(json.dumps({
-            "runId": run_id, "name": meta["name"], "args": args, "task": task.serialize(),
-        }, ensure_ascii=False, indent=2), encoding="utf-8")
+    results = await ctx.pipeline(DIMENSIONS, audit, verify)
+    confirmed = [{"dimension": r["dimension"], **f}
+                 for r in results if r for f in r["confirmed"]]
+    confirmed.sort(key=lambda f: {"high": 0, "medium": 1, "low": 2}.get(f["severity"], 3))
+    ctx.log(f"confirmed {len(confirmed)} real finding(s)")
+    return {"confirmed": confirmed}
 
 
-RUNNER = LiveAgentRunner()
+# Saved workflow registry
+WORKFLOWS = {SAMPLE_META["name"]: (SAMPLE_META, sample_workflow)}
+
+WORKFLOW_TOOL = {
+    "name": "Workflow",
+    "description": "Run a saved workflow by name. Pass input in args.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "name": {"type": "string"},
+            "args": {"type": "object"},
+            "resume_from_run_id": {"type": "string"},
+        },
+        "required": ["name"],
+        "additionalProperties": False,
+    },
+}
 
 
-def _last_run_id() -> str | None:
-    if not RUNTIME_DIR.exists():
-        return None
-    snapshots = sorted(RUNTIME_DIR.glob("*.json"), key=lambda p: p.stat().st_mtime)
-    if not snapshots:
-        return None
-    return snapshots[-1].stem
+def serialize_task(task):
+    return {
+        "taskId": task.task_id,
+        "taskType": "local_workflow",
+        "runId": task.run_id,
+        "workflowName": task.meta["name"],
+        "status": task.status,
+        "usage": dict(task.usage),
+        "progress": list(task.progress),
+    }
 
 
-# ---------------------------------------------------------------------------
-# Workflow 工具（接入 host 循环）
-# ---------------------------------------------------------------------------
+async def run_workflow(name, args=None, resume_from_run_id=None):
+    """Model-facing adapter: resolve trusted code from the host registry."""
+    if not isinstance(name, str):
+        raise WorkflowInputError("workflow name must be a string")
+    if name not in WORKFLOWS:
+        raise WorkflowInputError(f"unknown workflow '{name}'")
+    if args is not None and not isinstance(args, dict):
+        raise WorkflowInputError("workflow args must be an object")
+    meta, script_fn = WORKFLOWS[name]
+    out = await WorkflowTool().call(
+        meta,
+        script_fn,
+        args=args,
+        resume_from_run_id=resume_from_run_id,
+    )
+    return {
+        "launched": out["launched"],
+        "result": out["result"],
+        "task": serialize_task(out["task"]),
+    }
 
-@tool
-def run_workflow(name: str, args: dict | None = None, resume_from_run_id: str | None = None) -> str:
-    """Run a saved workflow by name (e.g. 'review-changes')."""
-    entry = WORKFLOWS.get(name)
-    if not entry:
-        return f"Error: unknown workflow '{name}'. Available: {', '.join(WORKFLOWS)}"
-    meta, script_fn = entry
+
+WORKFLOW_HANDLERS = {"Workflow": run_workflow}
+INHERITS_TOOLS_FROM = "s15"
+
+
+def run_workflow_sync(**tool_input):
+    """Bridge the synchronous host dispatcher to the async workflow runtime."""
     try:
-        out = WorkflowTool().run(meta, script_fn, args, resume_from_run_id)
-        return json.dumps(out, ensure_ascii=False)
-    except WorkflowInputError as e:
-        return f"Error: {e}"
+        return json.dumps(asyncio.run(run_workflow(**tool_input)), default=str)
+    except WorkflowInputError as exc:
+        return f"Error: {exc}"
 
 
-# ---------------------------------------------------------------------------
-# 演示 / 续跑 / 交互 CLI
-# ---------------------------------------------------------------------------
-
-def run_demo():
-    """用固定 runner 演示 pipeline + 校验 + journal + 续跑，不依赖 API。"""
-    global RUNNER
-    RUNNER = MockAgentRunner()
-    print("=== demo: run review-changes (mock) ===")
-    out = WorkflowTool().run(validate_meta(SAMPLE_META), sample_workflow, {"changes": "demo diff"})
-    run_id = out["launched"]["runId"]
-    print("\nresult:", out["result"], "agents:", out["task"]["agents"])
-
-    print("=== demo: resume same runId; every agent() should hit the journal cache ===")
-    out2 = WorkflowTool().run(validate_meta(SAMPLE_META), sample_workflow,
-                              {"changes": "demo diff"}, resume_from_run_id=run_id)
-    print("\nresult:", out2["result"], "agents:", out2["task"]["agents"], "tokens:", out2["task"]["tokens"])
-    print("\nStored under:", RUNTIME_DIR)
-
-
-def run_resume():
-    """续跑最近一次 runId。"""
-    global RUNNER
-    run_id = _last_run_id()
-    if not run_id:
-        print("no previous run to resume; run demo first")
+def install_workflow_tool(host):
+    """Extend the s15 host tool pool without changing its dispatch loop."""
+    global RUNNER_FACTORY
+    RUNNER_FACTORY = lambda: LangChainAgentRunner(host.client, host.MODEL)
+    if getattr(host, "_workflow_tool_installed", False):
         return
-    RUNNER = MockAgentRunner()
-    print(f"=== resume: {run_id} (mock) ===")
-    snapshot = json.loads((RUNTIME_DIR / f"{run_id}.json").read_text(encoding="utf-8"))
-    meta = {"name": snapshot["name"], "description": "resumed", "phases": SAMPLE_META.get("phases")}
-    out = WorkflowTool().run(validate_meta(meta), WORKFLOWS[snapshot["name"]][1],
-                             snapshot["args"], resume_from_run_id=run_id)
-    print("\nresult:", out["result"], "agents:", out["task"]["agents"], "tokens:", out["task"]["tokens"])
+    base_assemble = host.assemble_tool_pool
+
+    def assemble_with_workflow():
+        tools, handlers = base_assemble()
+        if not any(tool.get("name") == "Workflow" for tool in tools):
+            tools.append(WORKFLOW_TOOL)
+        handlers["Workflow"] = run_workflow_sync
+        return tools, handlers
+
+    host.assemble_tool_pool = assemble_with_workflow
+    host._workflow_tool_installed = True
 
 
-def run_interactive():
-    """host 循环：真实 API，把 Workflow 作为普通工具交给模型。"""
+def load_integrated_host():
+    """Load s15 lazily so deterministic workflow tests need no API key."""
+    path = Path(__file__).resolve().parents[1] / "s15_integrated_harness" / "code.py"
+    spec = importlib.util.spec_from_file_location("integrated_host", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"unable to load integrated host from {path}")
+    host = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = host
+    spec.loader.exec_module(host)
+    return host
 
-    @tool
-    def run_read(path: str, limit: int | None = None) -> str:
-        """Read a UTF-8 text file, optionally limiting line count."""
-        try:
-            lines = safe_path(WORKDIR, path).read_text(encoding="utf-8", errors="replace").splitlines()
-            if limit and limit < len(lines):
-                lines = lines[:limit] + [f"...({len(lines) - limit} more lines)"]
-            return "\n".join(lines)
-        except Exception as e:
-            return f"Error: {e}"
 
-    model = ChatOpenAI(
-        model=MODEL_ID, max_completion_tokens=8000, temperature=0,
-        api_key=OPENAI_API_KEY, base_url=OPENAI_BASE_URL,
+# -- CLI --
+async def run_demo(argv):
+    resume_id = None
+    if argv and argv[0] == "resume":
+        resume_id = _read_last_run()
+        if not resume_id:
+            print("nothing to resume; run `python code.py demo` first.")
+            return
+        print(f"resuming {resume_id}; unchanged agent() calls use the journal cache\n")
+    else:
+        print("launching workflow `review-changes`\n")
+
+    out = await WORKFLOW_HANDLERS["Workflow"](
+        name="review-changes",
+        args={"budget": None, "changes": DEMO_CHANGES},
+        resume_from_run_id=resume_id,
     )
-    agent = create_agent(
-        model=model,
-        tools=[run_read, run_workflow],
-        system_prompt=(
-            "You are a coding agent. You can run the saved 'review-changes' workflow with "
-            "run_workflow(name='review-changes', args={'changes': '...'}). "
-            "Read files, call the workflow, and summarize the result."
-        ),
-    )
 
-    print("s16: Workflow Runtime (interactive)")
-    print("Ask the model to review changes, or input q to quit.\n")
+    print("\nresult:")
+    for f in out["result"].get("confirmed", []):
+        print(f"  [{f['severity']:<6}] {f['dimension']}: {f['title']}")
+    task = out["task"]
+    usage = task["usage"]
+    print(f"\nstatus={task['status']}  agents={usage['agents']}  "
+          f"tokens={usage['tokens']}  journal=.runtime/{task['runId']}.journal.jsonl")
 
+
+PROMPT = "\033[36ms16 >> \033[0m"
+# \001/\002 tell Readline the ANSI escapes have zero display width.
+READLINE_PROMPT = "\001\033[36m\002s16 >> \001\033[0m\002"
+
+
+def run_cli():
+    """Run the cumulative s15 host with Workflow added to its tool pool."""
+    host = load_integrated_host()
+    install_workflow_tool(host)
+    host.CONSOLE.set_prompt(PROMPT, READLINE_PROMPT)
+    host.CLI_ACTIVE = True
+    host.start_runtime_services()
+    print("s16: workflow runtime")
+    print("Enter a question, press Enter to send. Type q to quit.\n")
     history = []
+    context = host.update_context({}, history)
+    session_state = {"active_user_request": "(no active user request)"}
+    threading.Thread(
+        target=host.async_event_loop,
+        args=(history, context, session_state),
+        daemon=True,
+    ).start()
     while True:
         try:
-            query = input("\033[36ms16 >> \033[0m")
+            query = host.CONSOLE.ask()
         except (EOFError, KeyboardInterrupt):
             break
         if query.strip().lower() in ("q", "exit", ""):
             break
-        history.append(HumanMessage(content=query))
-        result = agent.invoke({"messages": history})
-        history[:] = result["messages"]
-        last = history[-1]
-        if isinstance(last, AIMessage):
-            content = last.content
-            if isinstance(content, list):
-                content = "".join(b.get("text", "") for b in content if isinstance(b, dict))
-            print(content)
+        with host.agent_lock:
+            host.trigger_hooks("UserPromptSubmit", query)
+            turn_start = len(history)
+            session_state["active_user_request"] = query
+            history.append({"role": "user", "content": query})
+            host.agent_loop(history, context, query)
+            context = host.update_context(context, history)
+            host.print_turn_assistants(history, turn_start)
         print()
 
 
 if __name__ == "__main__":
-    mode = sys.argv[1] if len(sys.argv) > 1 else "interactive"
-    if mode == "demo":
-        run_demo()
-    elif mode == "resume":
-        run_resume()
+    if sys.argv[1:] and sys.argv[1] in {"demo", "resume"}:
+        asyncio.run(run_demo(sys.argv[1:]))
     else:
-        run_interactive()
+        run_cli()

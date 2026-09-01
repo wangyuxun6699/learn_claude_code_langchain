@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """harness 公共内核单元测试（纯标准库，无需 LLM / 网络）。"""
 import tempfile
 from pathlib import Path

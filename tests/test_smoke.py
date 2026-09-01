@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """逐章可运行性冒烟测试：全部 .py 必须通过 py_compile；harness 可导入。"""
 import pathlib
 import py_compile

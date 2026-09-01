@@ -1,132 +1,176 @@
-from dotenv import load_dotenv
-from harness.security import check_deny_list
-load_dotenv(override=True)
-from langchain_core.tools import tool
-import os, subprocess
+"""
+s02_tool_use.py - Tools
+
+The agent loop from s01 does not change. This lesson adds four tools
+and a dispatch map:
+
+    +----------+      +-------+      +--------------------------+
+    |   User   | ---> |  LLM  | ---> | Tool Dispatch            |
+    |  prompt  |      |       |      | bash       -> run_bash   |
+    +----------+      +---+---+      | read_file  -> run_read   |
+                          ^          | write_file -> run_write  |
+                          |          | edit_file  -> run_edit   |
+                          +----------+ glob       -> run_glob   |
+                          tool_result+--------------------------+
+
+  + run_read / run_write / run_edit / run_glob
+  + TOOL_HANDLERS instead of a hard-coded run_bash call
+  + safe_path to keep file tools inside the workspace
+
+Key insight: the loop stays the same; only tool registration and dispatch grow.
+"""
+
+import os
+import subprocess
+import sys
 from pathlib import Path
-from langchain_core.messages import AIMessage
-from langchain_openai import ChatOpenAI
-from langchain.agents import create_agent
+
+try:
+    import readline
+    readline.parse_and_bind('set bind-tty-special-chars off')
+    readline.parse_and_bind('set input-meta on')
+    readline.parse_and_bind('set output-meta on')
+    readline.parse_and_bind('set convert-meta off')
+except ImportError:
+    pass
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from harness.langchain_messages import LangChainMessagesClient
+from dotenv import load_dotenv
+
+load_dotenv(override=True)
 WORKDIR = Path.cwd()
-MODEL_ID = os.getenv('MODEL_ID')
-OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
-SYSTEM = f'you are a coding agent at {WORKDIR}. Use tools to solve tasks. Act dont explain'
-OPENAI_BASE_URL = os.getenv('BASE_URL')
+client = LangChainMessagesClient(base_url=os.getenv("BASE_URL"))
+MODEL = os.environ["MODEL_ID"]
+
+SYSTEM = f"You are a coding agent at {WORKDIR}. Use tools to solve tasks. Act, don't explain."
+
+def run_bash(command: str) -> str:
+    dangerous = ["rm -rf /", "sudo", "shutdown", "reboot", "> /dev/"]
+    if any(d in command for d in dangerous):
+        return "Error: Dangerous command blocked"
+    try:
+        r = subprocess.run(command, shell=True, cwd=WORKDIR,
+                           capture_output=True, text=True, errors="replace",
+                           timeout=120)
+        out = (r.stdout + r.stderr).strip()
+        return out[:50000] if out else "(no output)"
+    except subprocess.TimeoutExpired:
+        return "Error: Timeout (120s)"
+    except (FileNotFoundError, OSError) as e:
+        return f"Error: {e}"
 
 def safe_path(p: str) -> Path:
     path = (WORKDIR / p).resolve()
     if not path.is_relative_to(WORKDIR):
-        raise ValueError(f'Path escapes workspace: {p}')
+        raise ValueError(f"Path escapes workspace: {p}")
     return path
 
-@tool
-# 安全边界：shell=True 仅为教学演示，黑名单/路径检查不等于安全边界；生产请使用权限中间件 + 沙箱。
-def run_bash(command: str) -> str:
-    """Execute a shell command in the current workspace."""
-    denied = check_deny_list(command)
-    if denied:
-        return f'Blocked: {denied}'
-    try:
-        r = subprocess.run(command, shell=True, cwd=WORKDIR, capture_output=True, text=True, timeout=120)
-        out = (r.stdout + r.stderr).strip()
-        return out[:50000] if out else '(no output)'
-    except subprocess.TimeoutExpired:
-        return 'Error: Timeout(120s)'
-    except OSError as e:
-        return f'Error: {e}'
-
-@tool
-def run_read(path: str, limit: int | None=None) -> str:
-    """Read a UTF-8 text file, optionally limiting the returned line count."""
+def run_read(path: str, limit: int | None = None) -> str:
     try:
         lines = safe_path(path).read_text(encoding="utf-8").splitlines()
         if limit and limit < len(lines):
-            lines = lines[:limit] + [f'...({len(lines) - limit} more lines)']
-        return '\n'.join(lines)
+            lines = lines[:limit] + [f"... ({len(lines) - limit} more lines)"]
+        return "\n".join(lines)
     except Exception as e:
-        return f'Error: {e}'
+        return f"Error: {e}"
 
-@tool
 def run_write(path: str, content: str) -> str:
-    """Write UTF-8 content to a file, replacing its existing content."""
     try:
         file_path = safe_path(path)
         file_path.parent.mkdir(parents=True, exist_ok=True)
-        file_path.write_text(content, encoding="utf-8")
-        return f'write {len(content)} bytes to {path}'
+        file_path.write_text(content, encoding="utf-8", newline="")
+        return f"Wrote {len(content)} bytes to {path}"
     except Exception as e:
-        return f'Error: {e}'
+        return f"Error: {e}"
 
-@tool
 def run_edit(path: str, old_text: str, new_text: str) -> str:
-    """Replace the first exact occurrence of old_text in a UTF-8 file."""
     try:
         file_path = safe_path(path)
         text = file_path.read_text(encoding="utf-8")
         if old_text not in text:
-            return f'Error: text not found in {path}'
-        file_path.write_text(text.replace(old_text, new_text, 1), encoding="utf-8")
-        return f'edit {path}'
+            return f"Error: text not found in {path}"
+        file_path.write_text(text.replace(old_text, new_text, 1), encoding="utf-8", newline="")
+        return f"Edited {path}"
     except Exception as e:
-        return f'Error: {e}'
+        return f"Error: {e}"
 
-@tool
 def run_glob(pattern: str) -> str:
-    """Find workspace files matching a glob pattern."""
     import glob as g
     try:
-        results = []
-        for match in g.glob(pattern, root_dir=WORKDIR):
-            if (WORKDIR / match).resolve().is_relative_to(WORKDIR):
-                results.append(match)
-        return '\n'.join(results) if results else '(no matches)'
+        matches = sorted({
+            Path(match).as_posix() for match in g.glob(
+                pattern, root_dir=WORKDIR, recursive=True)
+            if (WORKDIR / match).resolve().is_relative_to(WORKDIR)
+        })
+        shown = matches[:200]
+        if len(matches) > 200:
+            shown.append("... (more matches omitted; narrow the pattern)")
+        return "\n".join(shown) if shown else "(no matches)"
     except Exception as e:
-        return f'Error: {e}'
+        return f"Error: {e}"
 
-def print_assistant_message(message: AIMessage) -> None:
-    content = message.content
-    if isinstance(content, str):
-        print(content)
-        return
-    if isinstance(content, list):
-        for block in content:
-            if isinstance(block, dict):
-                if block.get('type') == 'text':
-                    print(block.get('text', ''))
-            elif hasattr(block, 'text'):
-                print(block.text)
-TOOLS = [run_bash, run_edit, run_glob, run_write, run_read]
-MODEL = ChatOpenAI(model=MODEL_ID, max_completion_tokens=8000, temperature=0, api_key=OPENAI_API_KEY, base_url=OPENAI_BASE_URL)
-agent = create_agent(model=MODEL, tools=TOOLS, system_prompt=SYSTEM)
+TOOLS = [
+    {"name": "bash", "description": "Run a shell command.",
+     "input_schema": {"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]}},
+    {"name": "read_file", "description": "Read file contents.",
+     "input_schema": {"type": "object", "properties": {"path": {"type": "string"}, "limit": {"type": "integer"}}, "required": ["path"]}},
+    {"name": "write_file", "description": "Write content to a file.",
+     "input_schema": {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}, "required": ["path", "content"]}},
+    {"name": "edit_file", "description": "Replace exact text in a file once.",
+     "input_schema": {"type": "object", "properties": {"path": {"type": "string"}, "old_text": {"type": "string"}, "new_text": {"type": "string"}}, "required": ["path", "old_text", "new_text"]}},
+    {"name": "glob", "description": "Find files matching a glob pattern; ** matches recursively.",
+     "input_schema": {"type": "object", "properties": {"pattern": {"type": "string"}}, "required": ["pattern"]}},
+]
 
-def agent_loop(messages: list) -> None:
-    result = agent.invoke({'messages': messages})
-    new_messages = result['messages'][len(messages):]
-    for message in new_messages:
-        if hasattr(message, 'tool_calls') and message.tool_calls:
-            print('模型调用工具:')
-            for tool_call in message.tool_calls:
-                print('工具名：', tool_call['name'])
-                print('参数：', tool_call.get('args', {}))
-        elif message.__class__.__name__ == 'ToolMessage':
-            print('工具返回结果：')
-            print('工具名', getattr(message, 'name', None))
-            print('内容:', message.content)
-        else:
-            print('模型回复:')
-            print(getattr(message, 'content', message))
-    messages[:] = result['messages']
-if __name__ == '__main__':
-    print('s02: Tool Use — 在 s01 基础上加了 4 个工具')
-    print('输入问题，回车发送。输入 q 退出。\n')
+TOOL_HANDLERS = {
+    "bash": run_bash, "read_file": run_read, "write_file": run_write,
+    "edit_file": run_edit, "glob": run_glob,
+}
+
+def agent_loop(messages: list):
+    while True:
+        response = client.messages.create(
+            model=MODEL, system=SYSTEM, messages=messages,
+            tools=TOOLS, max_tokens=8000,
+        )
+        messages.append({"role": "assistant", "content": response.content})
+
+        tool_calls = [
+            block for block in response.content if block.type == "tool_use"
+        ]
+        if not tool_calls:
+            return
+
+        results = []
+        for block in tool_calls:
+            print(f"\033[33m> {block.name}\033[0m")
+            handler = TOOL_HANDLERS.get(block.name)
+            output = handler(**block.input) if handler else f"Unknown: {block.name}"
+            print(str(output)[:200])
+            results.append({"type": "tool_result", "tool_use_id": block.id, "content": output})
+
+        messages.append({"role": "user", "content": results})
+
+if __name__ == "__main__":
+    print("s02: Tool Use - four tools added to s01")
+    print("Enter a question, press Enter to send. Type q to quit.\n")
+
     history = []
     while True:
         try:
-            query = input('\x1b[36ms02 >> \x1b[0m')
+
+            query = input("\001\033[36m\002s02 >> \001\033[0m\002")
         except (EOFError, KeyboardInterrupt):
             break
-        if query.strip().lower() in ('q', 'exit', ''):
+        if query.strip().lower() in ("q", "exit", ""):
             break
-        history.append({'role': 'user', 'content': query})
+        history.append({"role": "user", "content": query})
         agent_loop(history)
+        for block in history[-1]["content"]:
+            if getattr(block, "type", None) == "text":
+                print(block.text)
         print()

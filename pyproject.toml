@@ -31,6 +31,10 @@ extend-exclude = ["venv", ".git", "__pycache__"]
 select = ["E", "F", "I", "UP", "B"]
 ignore = ["E501"]
 
+[tool.ruff.lint.per-file-ignores]
+# 该文件按上游的逐章循环式测试组织；闭包会在本轮 subTest 内立即执行。
+"tests/test_agent_teams_runtime.py" = ["B023"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"

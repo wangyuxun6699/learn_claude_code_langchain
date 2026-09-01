@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """统一、大小写不敏感、可读的命令权限策略。
 
 背景：shell=True 是把模型输出直接交给 shell，等价于把 shell 的权限下放给
@@ -9,7 +8,6 @@
 from __future__ import annotations
 
 import re
-from typing import Callable
 
 DANGEROUS_PHRASES: list[str] = [
     "rm -rf /",

@@ -1,12 +1,9 @@
-# -*- coding: utf-8 -*-
 """工作区路径解析与穿越防护（显式传入 workdir，避免全局耦合）。"""
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Union
 
-
-PathLike = Union[str, Path]
+PathLike = str | Path
 
 
 def get_workdir() -> Path:
