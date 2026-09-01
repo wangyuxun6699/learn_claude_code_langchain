@@ -525,7 +525,7 @@ TOOLS = [
 def runtime_system_prompt(
     request: ModelRequest[Any],
 ) -> str:
-    """Extend the s13 prompt with cron scheduling instructions."""
+    """Extend the s11 prompt with cron scheduling instructions."""
     prompt = base.get_system_prompt(
         base.build_prompt_context(request)
     )
@@ -675,12 +675,12 @@ def start_services() -> None:
 
 def main() -> None:
     start_services()
-    print("s14: LangChain cron scheduler")
+    print("s12: LangChain cron scheduler")
     print("输入问题后回车发送；输入 q 退出。\n")
 
     while True:
         try:
-            query = input("s14 >> ")
+            query = input("s12 >> ")
         except (EOFError, KeyboardInterrupt):
             print()
             break

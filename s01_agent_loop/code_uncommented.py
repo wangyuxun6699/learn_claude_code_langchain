@@ -11,6 +11,7 @@ except ImportError:
 import subprocess
 from pathlib import Path
 from dotenv import load_dotenv
+from harness.security import check_deny_list
 from langchain.agents import create_agent
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, ToolMessage, AIMessage
@@ -24,9 +25,9 @@ SYSTEM = f'you are a coding agent at {WORKDIR}. Use bash to solve tasks. Act don
 
 # 安全边界：shell=True 仅为教学演示，黑名单/路径检查不等于安全边界；生产请使用权限中间件 + 沙箱。
 def run_bash(command: str) -> str:
-    dangerous = ['rm -rf /', 'sudo', 'shutdown', 'reboot', '>/dev/']
-    if any((d in command for d in dangerous)):
-        return 'Error : Dangerous command blocked'
+    denied = check_deny_list(command)
+    if denied:
+        return f'Blocked: {denied}'
     try:
         r = subprocess.run(command, shell=True, cwd=WORKDIR, capture_output=True, text=True, timeout=120)
         out = (r.stdout + r.stderr).strip()

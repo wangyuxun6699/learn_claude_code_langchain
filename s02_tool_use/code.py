@@ -1,4 +1,5 @@
 from dotenv import load_dotenv
+from harness.security import check_deny_list
 load_dotenv(override=True)
 
 
@@ -29,12 +30,10 @@ def safe_path(p: str) -> Path:
 # 安全边界：shell=True 仅为教学演示，黑名单/路径检查不等于安全边界；生产请使用权限中间件 + 沙箱。
 def run_bash(command:str)->str:
     """Execute a shell command in the current workspace."""
-    # 简单拦截一些明显危险的命令，避免模型误删系统文件或关机。
-    dangerous = ["rm -rf /","sudo","shutdown","reboot",">/dev/"]
-
-    # 只要命令里包含危险片段，就直接返回错误，不真正执行。
-    if any(d in command for d in dangerous):
-        return "Error : Dangerous command blocked"
+    # 统一走 harness.security 的大小写不敏感、覆盖更广的拒绝策略。
+    denied = check_deny_list(command)
+    if denied:
+        return f"Blocked: {denied}"
 
     try:
         # 执行模型传入的 shell 命令。
@@ -66,7 +65,7 @@ def run_bash(command:str)->str:
 def run_read(path: str, limit: int | None = None) -> str:
     """Read a UTF-8 text file, optionally limiting the returned line count."""
     try:
-        lines = safe_path(path).read_text().splitlines()
+        lines = safe_path(path).read_text(encoding="utf-8").splitlines()
         if limit and limit < len(lines):
             lines = lines[:limit] + [f"...({len(lines) - limit} more lines)"]
         return "\n".join(lines)
@@ -79,7 +78,7 @@ def run_write(path: str,content: str)-> str:
     try:
         file_path = safe_path(path)
         file_path.parent.mkdir(parents=True, exist_ok=True)
-        file_path.write_text(content)
+        file_path.write_text(content, encoding="utf-8")
         return f"write {len(content)} bytes to {path}"
     except Exception as e:
         return f"Error: {e}"
@@ -89,10 +88,10 @@ def run_edit(path: str, old_text: str, new_text: str) ->str:
     """Replace the first exact occurrence of old_text in a UTF-8 file."""
     try:
         file_path = safe_path(path)
-        text = file_path.read_text()
+        text = file_path.read_text(encoding="utf-8")
         if old_text not in text:
             return f"Error: text not found in {path}"
-        file_path.write_text(text.replace(old_text, new_text, 1))
+        file_path.write_text(text.replace(old_text, new_text, 1), encoding="utf-8")
         return f"edit {path}"
     except Exception as e:
         return f"Error: {e}"

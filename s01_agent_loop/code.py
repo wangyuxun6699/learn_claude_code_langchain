@@ -22,6 +22,7 @@ from pathlib import Path
 
 # load_dotenv 用来从 .env 文件加载模型、key、base_url 等配置。
 from dotenv import load_dotenv
+from harness.security import check_deny_list
 
 # 旧版本使用 ChatAnthropic，这里保留注释，方便对比，不再实际导入。
 # from langchain_anthropic import ChatAnthropic
@@ -65,12 +66,10 @@ SYSTEM = f"you are a coding agent at {WORKDIR}. Use bash to solve tasks. Act don
 # 安全边界：shell=True 仅为教学演示，黑名单/路径检查不等于安全边界；生产请使用权限中间件 + 沙箱。
 def run_bash(command:str)->str:
     """Execute a shell command in the current workspace."""
-    # 简单拦截一些明显危险的命令，避免模型误删系统文件或关机。
-    dangerous = ["rm -rf /","sudo","shutdown","reboot",">/dev/"]
-
-    # 只要命令里包含危险片段，就直接返回错误，不真正执行。
-    if any(d in command for d in dangerous):
-        return "Error : Dangerous command blocked"
+    # 统一走 harness.security 的大小写不敏感、覆盖更广的拒绝策略。
+    denied = check_deny_list(command)
+    if denied:
+        return f"Blocked: {denied}"
 
     try:
         # 执行模型传入的 shell 命令。

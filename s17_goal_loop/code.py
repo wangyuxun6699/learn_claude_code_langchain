@@ -80,14 +80,7 @@ def trigger_hooks(event, *args):
     return None
 
 
-dangerous = ["rm -rf /", "sudo", "shutdown", "reboot", "mkfs", "dd if=", "> /dev/sda"]
-
-
-def check_deny_list(command: str) -> str | None:
-    for pattern in dangerous:
-        if pattern in command:
-            return f"blocked:{pattern} is on the deny list"
-    return None
+from harness.security import check_deny_list
 
 
 def resolve_path(raw_path: str) -> Path:
@@ -162,7 +155,7 @@ def subprocess_run(command: str):
 def run_read(path: str, limit: int | None = None) -> str:
     """Read a UTF-8 text file, optionally limiting the returned line count."""
     try:
-        lines = resolve_path(path).read_text().splitlines()
+        lines = resolve_path(path).read_text(encoding="utf-8").splitlines()
         if limit and limit < len(lines):
             lines = lines[:limit] + [f"...({len(lines) - limit} more lines)"]
         return "\n".join(lines)
@@ -176,7 +169,7 @@ def run_write(path: str, content: str) -> str:
     try:
         file_path = resolve_path(path)
         file_path.parent.mkdir(parents=True, exist_ok=True)
-        file_path.write_text(content)
+        file_path.write_text(content, encoding="utf-8")
         return f"write {len(content)} bytes to {path}"
     except Exception as e:
         return f"Error: {e}"
@@ -187,10 +180,10 @@ def run_edit(path: str, old_text: str, new_text: str) -> str:
     """Replace the first exact occurrence of old_text in a UTF-8 file."""
     try:
         file_path = resolve_path(path)
-        text = file_path.read_text()
+        text = file_path.read_text(encoding="utf-8")
         if old_text not in text:
             return f"Error: text not found in {path}"
-        file_path.write_text(text.replace(old_text, new_text, 1))
+        file_path.write_text(text.replace(old_text, new_text, 1), encoding="utf-8")
         return f"edit {path}"
     except Exception as e:
         return f"Error: {e}"
@@ -239,23 +232,27 @@ class PromptGoalEvaluator:
         "command succeeded. Set impossible=true only if the goal can no longer be achieved."
     )
 
-    def evaluate(self, condition: str, messages: list) -> dict:
+    def evaluate(self, condition: str, messages: list, max_retries: int = 2) -> dict:
         trimmed = self._trim(messages)
         conversation = self._render(trimmed)
-        try:
-            response = EVALUATOR_MODEL.invoke([
-                SystemMessage(content=self.SYSTEM),
-                HumanMessage(content=f"Goal condition:\n{condition}\n\nConversation:\n{conversation}"),
-            ])
-            data = self._parse_json(response.content)
-            return {
-                "ok": bool(data.get("ok")),
-                "reason": str(data.get("reason", "")),
-                "impossible": bool(data.get("impossible")),
-            }
-        except Exception as e:
-            # 评估器自己出错：停止自动延续，保留 goal，把错误交给用户，而不是假装成功。
-            return {"ok": False, "reason": f"evaluator error: {e}", "impossible": False, "error": True}
+        last_error: Exception | None = None
+        # 解析抖动（模型偶发输出非 JSON）不应立刻击穿 goal loop；先重试再交还用户。
+        for _ in range(max_retries + 1):
+            try:
+                response = EVALUATOR_MODEL.invoke([
+                    SystemMessage(content=self.SYSTEM),
+                    HumanMessage(content=f"Goal condition:\n{condition}\n\nConversation:\n{conversation}"),
+                ])
+                data = self._parse_json(response.content)
+                return {
+                    "ok": bool(data.get("ok")),
+                    "reason": str(data.get("reason", "")),
+                    "impossible": bool(data.get("impossible")),
+                }
+            except Exception as e:
+                last_error = e
+        # 评估器重试后仍出错：停止自动延续，保留 goal，把错误交给用户，而不是假装成功。
+        return {"ok": False, "reason": f"evaluator error after retries: {last_error}", "impossible": False, "error": True}
 
     @staticmethod
     def _render(messages: list) -> str:
@@ -300,10 +297,23 @@ class PromptGoalEvaluator:
     @staticmethod
     def _parse_json(raw) -> dict:
         text = str(raw).strip()
-        match = re.search(r"\{.*\}", text, re.DOTALL)
-        if match:
-            text = match.group(0)
-        return json.loads(text)
+        # 去掉 markdown 代码围栏，再定位首个 JSON 对象。
+        fence = re.search(r"```(?:json)?\s*(.*?)```", text, re.DOTALL)
+        if fence:
+            text = fence.group(1).strip()
+        start = text.find("{")
+        if start == -1:
+            raise ValueError("evaluator output has no JSON object")
+        # 从第一个 { 做括号配对，兼容嵌套对象与紧跟的说明文字。
+        depth = 0
+        for i in range(start, len(text)):
+            if text[i] == "{":
+                depth += 1
+            elif text[i] == "}":
+                depth -= 1
+                if depth == 0:
+                    return json.loads(text[start:i + 1])
+        raise ValueError("unbalanced JSON in evaluator output")
 
 
 class GoalController:

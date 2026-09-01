@@ -272,7 +272,7 @@ def _content_bytes(message: ToolMessage) -> int:
 # ------------------------------------------------------------------
 # 函数 persist_large_output
 # 把单条超大工具结果保存到磁盘，上下文中只留下路径、标签和 2000 字符预览。
-# tool_call_id 先过滤为安全文件名；同一 id 已存在时不覆盖，避免重试破坏首次完整结果。
+# tool_call_id 先过滤为安全文件名；同一 id 重复出现时始终覆盖写，以最新结果为准（幂等）。
 # 返回的 XML 风格标记会明确告诉模型：完整内容仍可通过文件工具重新读取。
 # ------------------------------------------------------------------
 def persist_large_output(
@@ -1017,15 +1017,7 @@ def stop_hook(
 # ------------------------------------------------------------------
 # 章节说明：7. 以下复用 s07：权限规则
 # ------------------------------------------------------------------
-DANGEROUS_COMMANDS = [
-    "rm -rf /",
-    "sudo",
-    "shutdown",
-    "reboot",
-    "mkfs",
-    "dd if=",
-    "> /dev/sda",
-]
+from harness.security import check_deny_list
 
 POTENTIALLY_DESTRUCTIVE_COMMANDS = [
     "rm ",
@@ -1055,12 +1047,7 @@ def resolve_path(raw_path:str)-> Path:
 # 对 shell 命令做不可绕过的高危模式检查。命中后直接返回原因，不询问用户。
 # 这是教学版字符串匹配，不等价于完整 shell 解析器，生产环境需要更严格的隔离。
 # ------------------------------------------------------------------
-def check_deny_list(command:str) ->str | None:
-    # 大小写归一化只用于教学字符串规则；生产系统仍应依赖沙箱而非黑名单。
-    normalized = command.lower()
-    for pattern in DANGEROUS_COMMANDS:
-        if pattern.lower() in normalized:
-            return f"Blocked:{pattern} is in the deny list"
+# check_deny_list 已由上方 harness.security import 提供。
         
     
     return None

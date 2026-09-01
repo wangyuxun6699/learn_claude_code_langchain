@@ -35,6 +35,8 @@ s05 的 TodoWrite 适合记录当前任务内部的执行步骤，但它没有�
 
 ## 解决方案
 
+![s10: Task System 总览](images/task-system-overview.svg)
+
 每个任务单独保存为一个 JSON 文件。任务通过 `blockedBy` 指向必须先完成的上游任务，形成一个有向依赖图。
 
 ```mermaid

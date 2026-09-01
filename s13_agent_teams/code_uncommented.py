@@ -2,9 +2,9 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
-from typing import Annotated, Any, Callable, Literal
+from typing import Annotated, Any, Callable, Literal, NotRequired
 
-from typing_extensions import NotRequired
+
 from langchain.agents import AgentState, create_agent
 from langchain.agents.middleware import ModelRequest, dynamic_prompt, wrap_tool_call
 from langchain.tools.tool_node import ToolCallRequest
@@ -512,12 +512,12 @@ def run_turn(query: str,thread_id: str = "s13-main"):
     return final_state
 
 def main() -> None:
-    print("s15: LangChain Agent Teams with Annotated handoffs")
+    print("s13: LangChain Agent Teams with Annotated handoffs")
     print("输入问题后回车发送；输入 q 退出。\n")
 
     while True:
         try:
-            query = input("\033[36ms15 >> \033[0m")
+            query = input("\033[36ms13 >> \033[0m")
         except (EOFError, KeyboardInterrupt):
             print()
             break

@@ -202,15 +202,7 @@ def stop_hook(
 # ============================================================
 
 # 这些模式直接拒绝，不向用户询问。
-DANGEROUS_COMMANDS = [
-    "rm -rf /",
-    "sudo",
-    "shutdown",
-    "reboot",
-    "mkfs",
-    "dd if=",
-    "> /dev/sda",
-]
+from harness.security import check_deny_list
 
 # 这些模式不直接拒绝，但必须由用户确认。
 POTENTIALLY_DESTRUCTIVE_COMMANDS = [
@@ -232,15 +224,7 @@ def resolve_path(raw_path: str) -> Path:
     return (WORKDIR / candidate).resolve()
 
 
-def check_deny_list(command: str) -> str | None:
-    """返回禁止原因；安全时返回 None。"""
-
-    # 大小写归一化，避免 SUDO、Shutdown 等简单变体绕过字符串规则。
-    normalized = command.lower()
-    for pattern in DANGEROUS_COMMANDS:
-        if pattern.lower() in normalized:
-            return f"Blocked: '{pattern}' is on the deny list"
-    return None
+# check_deny_list 已由上方 harness.security import 提供。
 
 
 def check_rules(tool_name: str, args: dict[str, Any]) -> str | None:

@@ -19,6 +19,8 @@ MCP 把这份职责拆开：server 提供「工具列表 + 调用接口」，har
 
 ## 解决方案
 
+![s14: MCP 架构](images/mcp-architecture.svg)
+
 本章从 s04 的五个基础工具和 Hook 出发，新增三块：
 
 - `MCPClient`：保存某个 server 返回的工具定义和调用处理器。
@@ -171,3 +173,30 @@ Connect to the deploy server and check the web service status. Do not trigger a 
 ## 下一步
 
 MCP 在这里仍是独立分支。s15 Integrated Harness 会把基础工具、Hook、skills、上下文、记忆、任务、后台工作、cron、团队和 MCP 合并进一个 runtime。
+
+<details>
+<summary>深入 CC 源码</summary>
+
+> 以下为机制级对照：Claude Code 的 MCP 集成是完整、真实存在的（多种 transport、OAuth、资源 / 提示订阅、按作用域配置 server 与工具），而教学版用进程内 mock server 只演示 `tools/list` 与 `tools/call` 的协议边界。不宣称逐行等价。
+
+### 一、CC 真实 MCP 的能力远多于教学版
+
+CC 内置 MCP client，支持 stdio / SSE / streamable HTTP 等传输、OAuth 授权、resources / prompts 订阅、按 user / project 作用域配置 server，并用允许 / 拒绝列表控制每个 server 暴露哪些工具。教学版把这些压缩成“一个进程内 server + 发现 + 调用”，因为本章只讲工具池如何动态组装，不讲 transport 细节。
+
+### 二、命名空间：CC 同样把外部工具和内置工具放进一个池子
+
+CC 的 MCP 工具与内置工具进入同一个工具池，工具名带 server 命名空间以避开同名冲突。教学版的 `mcp__{server}__{tool}` 前缀、名称规范化与 64 字符上限，复刻的就是这条“多个 server 都可能提供 search / status”的边界处理。
+
+### 三、权限判断不信任 server 自述
+
+CC 由用户在配置里批准 server 与工具；server 声明的 readOnlyHint / destructiveHint 只是提示，不是授权。教学版的宿主侧 `MCP_HOST_POLICY`（未配置默认 confirm）复刻了“权限由 host 决定、不由 server 声称决定”这一原则——description 写着 `readOnly` 不等于可信。
+
+### 四、动态工具池迫使手写循环
+
+CC 连接 server 后，下一轮模型调用就带上新工具。本 LangChain 版为复现这一点，放弃 `create_agent` 的静态工具图，手写 LangGraph 的 model→tools 循环并在每轮 `assemble_tool_pool()`；这正是 s01 里“交给 create_agent 的那条循环”被显式写出来的原因。
+
+### 五、教学版省略了什么
+
+真实 MCP transport（JSON-RPC / OAuth / 握手 / 重连）、资源订阅、轮询、tools/list 变更监听、跨 server 描述冲突的完整处理，都没有在本章实现。mock server 的目标是让“运行时新增工具”这条控制流可观察，而不是立即可用于生产接入。
+</details>
+

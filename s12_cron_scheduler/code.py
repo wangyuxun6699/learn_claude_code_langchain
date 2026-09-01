@@ -1,7 +1,7 @@
 """
-s14：Cron Scheduler。
+s12：Cron Scheduler。
 
-本章在 s13 的后台任务 Agent 上增加定时触发能力。核心数据流分成四层：
+本章在 s11 的后台任务 Agent 上增加定时触发能力。核心数据流分成四层：
 
     Scheduler 负责判断时间
         -> cron_queue 保存已经到期的任务
@@ -574,7 +574,7 @@ def run_cancel_cron(job_id: str) -> str:
     return f"已取消 {job_id}"
 
 
-# s13 的 8 个文件、命令和任务工具，加上本章的 3 个 Cron 工具。
+# s11 的 8 个文件、命令和任务工具，加上本章的 3 个 Cron 工具。
 TOOLS = [
     *base.TOOLS,
     run_schedule_cron,
@@ -587,8 +587,8 @@ TOOLS = [
 def runtime_system_prompt(
     request: ModelRequest[Any],
 ) -> str:
-    """Extend the s13 prompt with cron scheduling instructions."""
-    # 复用 s13 的动态工作区、记忆和后台任务提示，再追加本章边界。
+    """Extend the s11 prompt with cron scheduling instructions."""
+    # 复用 s11 的动态工作区、记忆和后台任务提示，再追加本章边界。
     prompt = base.get_system_prompt(
         base.build_prompt_context(request)
     )
@@ -756,12 +756,12 @@ def start_services() -> None:
 
 def main() -> None:
     start_services()
-    print("s14: LangChain cron scheduler")
+    print("s12: LangChain cron scheduler")
     print("输入问题后回车发送；输入 q 退出。\n")
 
     while True:
         try:
-            query = input("s14 >> ")
+            query = input("s12 >> ")
         except (EOFError, KeyboardInterrupt):
             print()
             break

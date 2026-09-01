@@ -345,6 +345,8 @@ learn-claude-code                   claw0
 
 ## 快速开始
 
+> 环境要求：**Python >= 3.11**（代码用到 `X | Y` 联合类型与 `typing.NotRequired`）。
+
 Windows PowerShell：
 
 ```powershell
@@ -366,7 +368,19 @@ BASE_URL=https://your-openai-compatible-endpoint/v1
 
 如果使用备用模型，再设置 `FALLBACK_MODEL_ID`。不要提交真实 `.env`。
 
+### 安全边界
 
+`run_bash` 的 `shell=True` 仅为教学演示：它把模型输出直接交给 shell，**黑名单 / 路径检查不等于安全边界**。所有章节统一复用 [harness/security.py](harness/security.py) 的大小写不敏感拒绝策略与 [harness/paths.py](harness/paths.py) 的工作区约束（s09/s12/s13 经 s08/s11 间接复用）；生产环境请改用默认拒绝的权限中间件 + 沙箱 / 容器。
+
+### 测试与 CI
+
+```bash
+pip install -r requirements-dev.txt  # pytest + ruff
+pytest -q                            # 冒烟(py_compile 全部章节) + harness 单测
+ruff check harness tests             # 只 lint 公共内核与测试
+```
+
+CI（[.github/workflows/ci.yml](.github/workflows/ci.yml)）在 Python 3.11 / 3.13 执行同样两步：用 `py_compile` 机器验证“逐章无语法错误”，章节运行时仍需真实 API key 手动验证。
 
 ## 全部章节
 
@@ -417,13 +431,20 @@ learn_claude_code/
 ├── s10_task_system/ ... s13_agent_teams/
 │   ├── code.py
 │   ├── code_uncommented.py
+│   ├── images/
 │   └── README.md
 ├── s14_mcp_plugin/ ... s17_goal_loop/
 │   ├── code.py              # 带注释教学版（可直接运行）
 │   ├── code_uncommented.py  # 无注释速读版
+│   ├── images/
 │   └── README.md
 ├── legacy/                  # 20 章旧编排中移除/合并的章节（存档）
 ├── skills/                  # s07 可扫描的示例 Skills
+├── harness/                 # 各章共用的安全/路径/IO 内核（单一实现，避免漂移）
+├── tests/                   # harness 单测 + 全库 py_compile 冒烟
+├── pyproject.toml           # min Python 3.11 + ruff + pytest 配置
+├── requirements-dev.txt     # pytest + ruff
+├── .github/workflows/ci.yml
 ├── .env.example
 └── requirements.txt
 ```

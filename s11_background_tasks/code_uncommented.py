@@ -13,6 +13,7 @@ from threading import RLock, Thread
 from typing import Any, Literal
 
 from dotenv import load_dotenv
+from harness.security import check_deny_list
 from langchain.agents import create_agent
 from langchain.agents.middleware import (
     AgentMiddleware,
@@ -397,6 +398,10 @@ def execute_shell_command(
     timeout: int,
 ) -> tuple[str, int]:
     """同步执行命令，返回输出和退出码。"""
+
+    denied = check_deny_list(command)
+    if denied:
+        return f"Blocked: {denied}", 1
 
     try:
         process_options: dict[str, Any] = {}
@@ -803,6 +808,10 @@ def run_bash(
     if not clean_command:
         return "错误：命令不能为空"
 
+    denied = check_deny_list(clean_command)
+    if denied:
+        return f"Blocked: {denied}"
+
     if should_run_background(
         clean_command,
         run_in_background,
@@ -1192,8 +1201,8 @@ def agent_loop(
 
 
 def main() -> None:
-    """启动 s13 命令行 Agent。"""
-    print("s13: background tasks")
+    """启动 s11 命令行 Agent。"""
+    print("s11: background tasks")
     print(
         "输入问题后按回车发送；"
         "输入 q 退出。\n"
@@ -1206,7 +1215,7 @@ def main() -> None:
     while True:
         try:
             query = input(
-                "\033[36ms13 >> \033[0m"
+                "\033[36ms11 >> \033[0m"
             )
 
         except (EOFError, KeyboardInterrupt):

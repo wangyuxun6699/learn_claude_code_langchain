@@ -20,6 +20,8 @@ Agent 的 bash 工具也一样。`pip install torch` 要 10 分钟，`npm run bu
 
 ## 解决方案
 
+![s11: Background Tasks 总览](images/background-tasks-overview.svg)
+
 教学代码沿用 s10 的持久化任务系统和动态 system prompt；为了聚焦后台任务，仍然省略已归档的 s11 的完整错误恢复、技能加载和上下文压缩。唯一的核心变化是：耗时 shell 命令被送入后台线程，`bash` 工具立即返回后台任务 ID，命令完成后再把通知注入 LangGraph 消息状态。
 
 同步 vs 后台：

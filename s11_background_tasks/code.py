@@ -1,7 +1,7 @@
 """
-s13：后台任务系统。
+s11：后台任务系统。
 
-本章在 s12 的持久化 Task System 之上增加两条独立的数据流：
+本章在 s10 的持久化 Task System 之上增加两条独立的数据流：
 
     LangGraph 工具调用
     └─ bash(command, run_in_background=True)
@@ -33,6 +33,7 @@ from threading import RLock, Thread
 from typing import Any, Literal
 
 from dotenv import load_dotenv
+from harness.security import check_deny_list
 from langchain.agents import create_agent
 from langchain.agents.middleware import (
     AgentMiddleware,
@@ -57,7 +58,7 @@ load_dotenv(override=True)
 
 # 文件工具和 shell 命令都以启动程序时的当前目录为安全边界。
 WORKDIR = Path.cwd().resolve()
-# s12 的业务任务继续保存在 .tasks/*.json 中。
+# s10 的业务任务继续保存在 .tasks/*.json 中。
 TASKS_DIR = WORKDIR / ".tasks"
 # 动态 system prompt 会读取可选的长期记忆索引。
 MEMORY_INDEX = WORKDIR / ".memory" / "MEMORY.md"
@@ -85,7 +86,7 @@ TASKS_DIR.mkdir(parents=True, exist_ok=True)
 
 
 # ============================================================
-# 2. s12 持久化任务系统
+# 2. s10 持久化任务系统
 # ============================================================
 
 # 业务任务状态和后台 shell 状态属于两套不同的状态机。
@@ -453,6 +454,10 @@ def execute_shell_command(
     timeout: int,
 ) -> tuple[str, int]:
     """同步执行命令，返回输出和退出码。"""
+
+    denied = check_deny_list(command)
+    if denied:
+        return f"Blocked: {denied}", 1
 
     try:
         # 独立进程组让超时处理能够终止整棵派生进程树。
@@ -883,6 +888,10 @@ def run_bash(
     if not clean_command:
         return "错误：命令不能为空"
 
+    denied = check_deny_list(clean_command)
+    if denied:
+        return f"Blocked: {denied}"
+
     # 后台路径只等待线程启动，不等待子进程完成。
     if should_run_background(
         clean_command,
@@ -979,7 +988,7 @@ def run_write(
 
 
 # ============================================================
-# s12 Task System 的 LangChain 工具包装
+# s10 Task System 的 LangChain 工具包装
 # ============================================================
 
 @tool("create_task")
@@ -1292,8 +1301,8 @@ def agent_loop(
 
 
 def main() -> None:
-    """启动 s13 命令行 Agent。"""
-    print("s13: background tasks")
+    """启动 s11 命令行 Agent。"""
+    print("s11: background tasks")
     print(
         "输入问题后按回车发送；"
         "输入 q 退出。\n"
@@ -1307,7 +1316,7 @@ def main() -> None:
     while True:
         try:
             query = input(
-                "\033[36ms13 >> \033[0m"
+                "\033[36ms11 >> \033[0m"
             )
 
         except (EOFError, KeyboardInterrupt):

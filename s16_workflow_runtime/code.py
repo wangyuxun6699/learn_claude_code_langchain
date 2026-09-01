@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any
 
 from dotenv import load_dotenv
+from harness.paths import safe_path
 from langchain_openai import ChatOpenAI
 from langchain_core.tools import tool
 from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
@@ -38,6 +39,9 @@ OPENAI_BASE_URL = os.getenv("BASE_URL")
 
 # 运行产物目录：快照 / 输出 / journal / lock 都放在本章目录下的 .runtime/。
 RUNTIME_DIR = Path(__file__).resolve().parent / ".runtime"
+
+# run_read 只允许读仓库根目录（工作区）内的文件，防止读任意绝对路径。
+WORKDIR = Path(__file__).resolve().parent.parent
 
 
 # ---------------------------------------------------------------------------
@@ -547,7 +551,7 @@ def run_interactive():
     def run_read(path: str, limit: int | None = None) -> str:
         """Read a UTF-8 text file, optionally limiting line count."""
         try:
-            lines = Path(path).read_text(encoding="utf-8").splitlines()
+            lines = safe_path(WORKDIR, path).read_text(encoding="utf-8", errors="replace").splitlines()
             if limit and limit < len(lines):
                 lines = lines[:limit] + [f"...({len(lines) - limit} more lines)"]
             return "\n".join(lines)

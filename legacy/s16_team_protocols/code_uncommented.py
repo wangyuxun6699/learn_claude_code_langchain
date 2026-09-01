@@ -4,9 +4,9 @@ import json
 import sys
 from pathlib import Path
 from threading import RLock
-from typing import Annotated, Any, Callable, Literal
+from typing import Annotated, Any, Callable, Literal, NotRequired
 
-from typing_extensions import NotRequired
+
 from langchain.agents.middleware import (
     AgentMiddleware,
     ModelRequest,

@@ -203,27 +203,8 @@ OPENAI_BASE_URL = os.getenv("BASE_URL")
 
 """第一层检查"""
 
-# dangerous 是硬拦截列表：只要命令字符串中包含这些片段，就直接拒绝。
-# 这一层不询问用户，因为这些命令风险很高，比如格式化磁盘、关机、删除根目录。
-dangerous = [
-    "rm -rf /", "sudo", "shutdown", "reboot",
-    "mkfs", "dd if=", "> /dev/sda",
-]
-
-
-def check_deny_list(command: str) -> str | None:
-    """检查 shell 命令是否命中硬拦截列表。
-
-    返回字符串表示发现危险内容；返回 None 表示没有命中。
-    """
-    # 逐个检查危险关键词或危险命令片段。
-    for pattern in dangerous:
-        # 这里用包含匹配，写法简单，但也意味着只要命令里出现该片段就会被拦截。
-        if pattern in command:
-            return f"blocked:{pattern} is on the deny list"
-
-    # 没有发现危险片段，返回 None。
-    return None
+# 统一走 harness.security 的大小写不敏感、覆盖更广的拒绝策略。
+from harness.security import check_deny_list
 
 
 def resolve_path(raw_path: str) -> Path:
@@ -379,7 +360,7 @@ def run_read(path: str, limit: int | None = None) -> str:
     """Read a UTF-8 text file, optionally limiting the returned line count."""
     try:
         # 读取整个文件并按行拆开，方便后面做行数限制。
-        lines = resolve_path(path).read_text().splitlines()
+        lines = resolve_path(path).read_text(encoding="utf-8").splitlines()
 
         # 如果传入 limit，并且文件行数超过 limit，就只返回前 limit 行。
         if limit and limit < len(lines):
@@ -405,7 +386,7 @@ def run_write(path: str, content: str) -> str:
         file_path.parent.mkdir(parents=True, exist_ok=True)
 
         # 写入文件内容；如果文件已存在，会被覆盖。
-        file_path.write_text(content)
+        file_path.write_text(content, encoding="utf-8")
 
         # 返回写入字节数/字符数提示，方便模型确认操作结果。
         return f"write {len(content)} bytes to {path}"
@@ -423,14 +404,14 @@ def run_edit(path: str, old_text: str, new_text: str) -> str:
         file_path = resolve_path(path)
 
         # 读取原文件内容。
-        text = file_path.read_text()
+        text = file_path.read_text(encoding="utf-8")
 
         # 如果找不到 old_text，就返回错误，避免误以为编辑成功。
         if old_text not in text:
             return f"Error: text not found in {path}"
 
         # 只替换第一处匹配内容，避免一次工具调用误改太多地方。
-        file_path.write_text(text.replace(old_text, new_text, 1))
+        file_path.write_text(text.replace(old_text, new_text, 1), encoding="utf-8")
 
         # 返回简短成功提示。
         return f"edit {path}"

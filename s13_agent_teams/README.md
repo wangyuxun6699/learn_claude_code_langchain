@@ -40,6 +40,8 @@ Lead 与 Teammate 不是两个互相调用的普通 Python 函数。它们各自
 
 ## 总体架构
 
+![s13: Agent Teams 总览](images/agent-teams-overview.svg)
+
 ```text
                          Parent StateGraph(TeamState)
 
@@ -421,3 +423,30 @@ python -c "import s13_agent_teams.code as c; print(type(c.team_graph).__name__)"
 s13 已经能在 Lead 和 Teammate 之间交接控制权。新版 17 章编排中，旧版的 s16 Team Protocols、s17 Autonomous Agents、s18 Worktree Isolation 已并入本章，对应材料见 [legacy](../legacy/)。
 
 [s14: MCP & Plugin](../s14_mcp_plugin/) 将把外部工具接入同一个工具池。
+
+<details>
+<summary>深入 CC 源码</summary>
+
+> 本章为机制级对照：Claude Code 真实实现里并没有“命名队友 + 文件收件箱”这套东西，参考仓库和本 LangChain 版本都是为教学把“多 Agent 协作”拆成可读的抽象。以下不逐行对应 CC 源码，只讲清真实 CC 怎么做、教学版各自简化和改写了什么。
+
+### 一、CC 的委派本质是“一次性 subagent”，不是“持久队友”
+
+Claude Code 里最接近“委派”的是 Task/subagent 工具（本仓库 s06 的对应物）：主 agent 每次调用都新建一个隔离的上下文，跑完只回传最终结果，然后销毁；没有跨任务保留身份的“队友线程”，也没有 WORK/IDLE 生命周期。参考仓库引入“持久队友”，是为了给“结果与空闲分开表达”“空闲队友自动认领 ready task”“队友与 Lead 之间有显式关机 / 审批协议”这些概念一个落点；它们都是教学抽象，不是 CC 源码里的某个组件。
+
+### 二、“MessageBus 文件邮箱”是教学版的异步通道模拟
+
+CC 的 subagent 结果作为工具结果同步回传主循环，不存在演员之间通过 JSONL 邮箱互发消息的机制。参考仓库用文件收件箱演示“通信放在模型上下文之外”；本 LangChain 版改用一张父级 `StateGraph` 里的两个子图，通过 `Command` 在父子图之间切换控制权。三者目标一致（不让一个队友的工具结果污染另一个的推理），实现分别是文件收件箱、类型化邮箱消息、图状态 + `Command`。
+
+### 三、任务认领与依赖图，对应 CC 的 TodoWrite 与任务系统
+
+“空闲队友原子认领 ready task”是团队版的教学简化。CC 有 TodoWrite（会话内清单）和持久化任务系统（s10）；多 agent 竞争同一任务时的跨进程锁、高水位 ID，都属于 s10 任务系统的课题，而不是“队友抢任务”这个教学场景本身。
+
+### 四、worktree 隔离才是 CC 真实存在的并行机制
+
+CC 确实用 git worktree 给并行任务分隔工作目录（本仓库 legacy 里 s18 Worktree Isolation 的来源）。参考仓库把它并入 s13 作为“任务绑定的 worktree”；本 LangChain 版为聚焦 handoff 没有实现 worktree，只保留“共享工作目录”这一最小假设。
+
+### 五、本 LangChain 版的取舍
+
+本仓库最终做的是“Agent Teams 的最小 handoff 内核”：Lead / Teammate 是同一张 `StateGraph` 里顺序切换的两个 `create_agent` 子图，共享 `messages`，用 `Command.PARENT` + `goto` 交接控制权。它刻意省略了并行队友、驻留多身份、每-agent 私有上下文、持久化 checkpointer 与 worktree——这些在参考仓库 / 真实 CC 里分别对应线程、命名队友、线程收件箱、会话状态与 git worktree。
+</details>
+

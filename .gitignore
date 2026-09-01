@@ -10,6 +10,9 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 
+# Sandbox pip temp (safe to delete manually)
+.pip-tmp/
+
 # Virtual environments
 .venv/
 venv/
@@ -32,3 +35,8 @@ Thumbs.db
 
 schema.sql
 .scheduled_tasks.json
+
+# Reference repo download artifacts (local working material, not part of the course)
+.ref-repo/
+.ref-repo.zip
+_dl_ref.py

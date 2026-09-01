@@ -30,6 +30,7 @@ from typing import Any
 
 
 from dotenv import load_dotenv
+from harness.security import check_deny_list
 
 from langchain.agents import create_agent
 from langchain.agents.middleware import ModelRequest,dynamic_prompt
@@ -242,6 +243,10 @@ def safe_path(raw_path: str)-> Path:
 # 安全边界：shell=True 仅为教学演示，黑名单/路径检查不等于安全边界；生产请使用权限中间件 + 沙箱。
 def run_bash(command:str)-> str:
     """Run a shell command in the workspace and return its output."""
+
+    denied = check_deny_list(command)
+    if denied:
+        return f"Blocked: {denied}"
 
     try: 
         # cwd 固定工作区；capture_output 让 stdout/stderr 能作为 ToolMessage 返回模型。

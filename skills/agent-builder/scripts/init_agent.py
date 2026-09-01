@@ -3,12 +3,11 @@
 Agent Scaffold Script - Create a new agent project with best practices.
 
 Usage:
-    python init_agent.py <agent-name> [--level 0-4] [--path <output-dir>]
+    python init_agent.py <agent-name> [--level 0-1] [--path <output-dir>]
 
 Examples:
     python init_agent.py my-agent                 # Level 1 (4 tools)
     python init_agent.py my-agent --level 0      # Minimal (bash only)
-    python init_agent.py my-agent --level 2      # With TodoWrite
     python init_agent.py my-agent --path ./bots  # Custom output directory
 """
 
@@ -217,10 +216,10 @@ MODEL_NAME=claude-sonnet-4-20250514
 def create_agent(name: str, level: int, output_dir: Path):
     """Create a new agent project."""
     # Validate level
-    if level not in TEMPLATES and level not in (2, 3, 4):
+    if level not in TEMPLATES:
         print(f"Error: Level {level} not yet implemented in scaffold.")
         print("Available levels: 0 (minimal), 1 (4 tools)")
-        print("For levels 2-4, copy from mini-claude-code repository.")
+        print("Levels 2-4 (Todo / Subagent / Skills) are not scaffolded yet.")
         sys.exit(1)
 
     # Create output directory
@@ -230,17 +229,17 @@ def create_agent(name: str, level: int, output_dir: Path):
     # Write agent file
     agent_file = agent_dir / f"{name}.py"
     template = TEMPLATES.get(level, TEMPLATES[1])
-    agent_file.write_text(template.format(name=name))
+    agent_file.write_text(template.format(name=name), encoding="utf-8")
     print(f"Created: {agent_file}")
 
     # Write .env.example
     env_file = agent_dir / ".env.example"
-    env_file.write_text(ENV_TEMPLATE)
+    env_file.write_text(ENV_TEMPLATE, encoding="utf-8")
     print(f"Created: {env_file}")
 
     # Write .gitignore
     gitignore = agent_dir / ".gitignore"
-    gitignore.write_text(".env\n__pycache__/\n*.pyc\n")
+    gitignore.write_text(".env\n__pycache__/\n*.pyc\n", encoding="utf-8")
     print(f"Created: {gitignore}")
 
     print(f"\nAgent '{name}' created at {agent_dir}")
@@ -260,13 +259,11 @@ def main():
 Levels:
   0  Minimal (~50 lines) - Single bash tool, self-recursion for subagents
   1  Basic (~200 lines)  - 4 core tools: bash, read, write, edit
-  2  Todo (~300 lines)   - + TodoWrite for structured planning
-  3  Subagent (~450)     - + Task tool for context isolation
-  4  Skills (~550)       - + Skill tool for domain expertise
+  2-4 (Todo / Subagent / Skills) - not scaffolded yet
         """
     )
     parser.add_argument("name", help="Name of the agent to create")
-    parser.add_argument("--level", type=int, default=1, choices=[0, 1, 2, 3, 4],
+    parser.add_argument("--level", type=int, default=1, choices=[0, 1],
                        help="Complexity level (default: 1)")
     parser.add_argument("--path", type=Path, default=Path.cwd(),
                        help="Output directory (default: current directory)")

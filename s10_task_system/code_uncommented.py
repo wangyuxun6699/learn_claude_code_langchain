@@ -11,6 +11,7 @@ from threading import RLock
 from typing import Any, Literal
 
 from dotenv import load_dotenv
+from harness.security import check_deny_list
 from langchain.agents import create_agent
 from langchain.agents.middleware import ModelRequest, dynamic_prompt
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, ToolMessage
@@ -325,6 +326,9 @@ def safe_path(raw_path: str) -> Path:
 # 安全边界：shell=True 仅为教学演示，黑名单/路径检查不等于安全边界；生产请使用权限中间件 + 沙箱。
 def run_bash(command: str) -> str:
     """在工作区运行 shell 命令，并返回标准输出与标准错误。"""
+    denied = check_deny_list(command)
+    if denied:
+        return f"Blocked: {denied}"
     try:
         result = subprocess.run(
             command,
@@ -548,14 +552,14 @@ def agent_loop(session_state: dict[str, Any]) -> None:
 
 
 def main() -> None:
-    """启动 s12 命令行交互程序。"""
-    print("s12：LangChain 持久化任务系统")
+    """启动 s10 命令行交互程序。"""
+    print("s10：LangChain 持久化任务系统")
     print("输入问题后按回车发送；输入 q、exit 或空行退出。\n")
 
     session_state: dict[str, Any] = {"messages": []}
     while True:
         try:
-            query = input("\033[36ms12 >> \033[0m")
+            query = input("\033[36ms10 >> \033[0m")
         except (EOFError, KeyboardInterrupt):
             print()
             break

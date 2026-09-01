@@ -1,5 +1,5 @@
 """
-s15：Agent Teams。
+s13：Agent Teams。
 
 这一章用 LangChain 的 create_agent 构造两个可独立运行的 Agent 子图，再用
 LangGraph StateGraph 把它们组织成 Lead <-> Teammate 的顺序 handoff 工作流：
@@ -26,11 +26,11 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
-from typing import Annotated, Any, Callable, Literal
+from typing import Annotated, Any, Callable, Literal, NotRequired
 
 # LangChain 提供 Agent 工厂、消息、工具与 middleware；它负责每个节点内部的
 # “模型 -> 工具 -> 模型”循环。
-from typing_extensions import NotRequired
+
 from langchain.agents import AgentState, create_agent
 from langchain.agents.middleware import ModelRequest, dynamic_prompt, wrap_tool_call
 from langchain.tools.tool_node import ToolCallRequest
@@ -54,7 +54,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from s11_background_tasks import code as base
 
 
-# 复用 s13 已配置好的 ChatOpenAI 模型、工作目录和文件/任务/后台工具。这样本章
+# 复用 s11 已配置好的 ChatOpenAI 模型、工作目录和文件/任务/后台工具。这样本章
 # 只实现团队编排，不复制此前章节的基础设施。
 MODEL = base.model
 WORKDIR = base.WORKDIR
@@ -378,7 +378,7 @@ def report_to_lead(
 @dynamic_prompt
 def lead_system_prompt(request: ModelRequest[Any],) -> str:
     # dynamic_prompt 在每次模型调用前运行。Lead 的规则虽是静态文本，但使用
-    # middleware 与 s13 的动态上下文组装方式保持一致，也方便以后按状态扩展。
+    # middleware 与 s11 的动态上下文组装方式保持一致，也方便以后按状态扩展。
     return f"""
 You are the Lead coding agent working in:
 
@@ -616,12 +616,12 @@ def run_turn(query: str,thread_id: str = "s13-main"):
     return final_state
 
 def main() -> None:
-    print("s15: LangChain Agent Teams with Annotated handoffs")
+    print("s13: LangChain Agent Teams with Annotated handoffs")
     print("输入问题后回车发送；输入 q 退出。\n")
 
     while True:
         try:
-            query = input("\033[36ms15 >> \033[0m")
+            query = input("\033[36ms13 >> \033[0m")
         except (EOFError, KeyboardInterrupt):
             print()
             break

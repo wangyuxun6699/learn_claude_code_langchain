@@ -11,13 +11,7 @@ MODEL_ID = os.getenv('MODEL_ID')
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
 SYSTEM = f'you are a coding agent at {WORKDIR}. Use tools to solve tasks. Act dont explain'
 OPENAI_BASE_URL = os.getenv('BASE_URL')
-dangerous = ['rm -rf /', 'sudo', 'shutdown', 'reboot', 'mkfs', 'dd if=', '> /dev/sda']
-
-def check_deny_list(command: str) -> str | None:
-    for pattern in dangerous:
-        if pattern in command:
-            return f'blocked:{pattern} is on the deny list'
-    return None
+from harness.security import check_deny_list
 
 def resolve_path(raw_path: str) -> Path:
     candidate = Path(raw_path)
@@ -75,7 +69,7 @@ def run_read(path: str, limit: int | None=None) -> str:
     if not check_permission('run_read', {'path': path}):
         return 'Permission denied.'
     try:
-        lines = resolve_path(path).read_text().splitlines()
+        lines = resolve_path(path).read_text(encoding="utf-8").splitlines()
         if limit and limit < len(lines):
             lines = lines[:limit] + [f'...({len(lines) - limit} more lines)']
         return '\n'.join(lines)
@@ -90,7 +84,7 @@ def run_write(path: str, content: str) -> str:
     try:
         file_path = resolve_path(path)
         file_path.parent.mkdir(parents=True, exist_ok=True)
-        file_path.write_text(content)
+        file_path.write_text(content, encoding="utf-8")
         return f'write {len(content)} bytes to {path}'
     except Exception as e:
         return f'Error: {e}'
@@ -102,10 +96,10 @@ def run_edit(path: str, old_text: str, new_text: str) -> str:
         return 'permission is denied'
     try:
         file_path = resolve_path(path)
-        text = file_path.read_text()
+        text = file_path.read_text(encoding="utf-8")
         if old_text not in text:
             return f'Error: text not found in {path}'
-        file_path.write_text(text.replace(old_text, new_text, 1))
+        file_path.write_text(text.replace(old_text, new_text, 1), encoding="utf-8")
         return f'edit {path}'
     except Exception as e:
         return f'Error: {e}'

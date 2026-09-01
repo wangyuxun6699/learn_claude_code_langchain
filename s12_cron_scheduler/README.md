@@ -18,6 +18,8 @@ s11 已经能把慢命令送到后台，但所有工作仍需用户主动触发�
 
 ## 解决方案
 
+![s12: Cron Scheduler 总览](images/cron-scheduler-overview.svg)
+
 本章把定时工作拆成四层：
 
 ```text
