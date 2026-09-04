@@ -1,6 +1,6 @@
 # s10: Task System — 从执行清单到可协调的任务状态
 
-> **对齐状态**：本章 `code.py` 对齐上游 `s10_task_system`；模型请求由 `harness/langchain_messages.py` 转换为 LangChain OpenAI-compatible 调用，循环和 Harness 机制保持上游结构。
+> **对齐状态**：本章 `code.py` 对齐上游 `s10_task_system` 的结构；模型适配与本章机制在 `code.py` 中直接实现，使用 LangChain OpenAI-compatible 调用。
 [English](README.md) · [中文](README.zh.md) · [日本語](README.ja.md)
 
 s01 → ... → s08 → s09 → `s10` → [s11](../s11_background_tasks/) → s12 → ... → s16 → s17
@@ -541,67 +541,64 @@ s11 将在任务系统之上增加 Background Tasks：耗时命令不再阻塞 A
 
 </details>
 <!-- local-langchain-additions:end -->
----
 
-## 本项目保留的 Claude Code 源码补充
+<!-- upstream-cc-source:start -->
+## 深入 CC 源码
 
-> 以下内容来自本仓库原有 README，作为上游课程之外的源码研读补充。
+> 原文：[s12_task_system](https://github.com/shareAI-lab/learn-claude-code/blob/67a9126c6435a8654ba7a6f68c0fd2130f00a462/s12_task_system/README.md)。以下折叠块保持原文，文中的章号与源码行号沿用该版本。
 
 <details>
-<summary>深入 Claude Code 源码</summary>
+<summary>深入 CC 源码</summary>
 
-以下内容根据参考仓库对 Claude Code `utils/tasks.ts`、TaskCreate、TaskGet、TaskUpdate、TaskList 和任务列表监听逻辑的分析整理。教学代码用于说明核心机制，不宣称与产品源码逐行等价。
+> 以下基于 CC 源码 `utils/tasks.ts`（862 行）、`tools/TaskCreateTool/TaskCreateTool.ts`（138 行）、`tools/TaskUpdateTool/TaskUpdateTool.ts`（406 行）、`tools/TaskGetTool/TaskGetTool.ts`（128 行）、`tools/TaskListTool/TaskListTool.ts`（116 行）、`hooks/useTaskListWatcher.ts`（221 行）的分析。
 
-### 一、真实 TaskRecord 字段更多
+### 一、TaskRecord 的完整字段
 
-| 字段 | 用途 |
-|---|---|
-| `id` | 任务 ID |
-| `subject` | 简短标题 |
-| `description` | 完整任务描述 |
-| `activeForm` | 进行中时显示的进行时文本 |
-| `owner` | 被分配的 agent ID |
-| `status` | pending / in_progress / completed |
-| `blocks` | 当前任务阻塞的下游任务 |
-| `blockedBy` | 阻塞当前任务的上游任务 |
-| `metadata` | 可扩展元数据 |
+教学版只讲了 id、subject、status、owner、blockedBy。CC 实际有 9 个字段（`utils/tasks.ts:76-89`）：
 
-真实存储按任务列表隔离，形式类似：
+| 字段 | 类型 | 用途 |
+|------|------|------|
+| `id` | string | 递增整数 ID |
+| `subject` | string | 简短标题 |
+| `description` | string | 自由格式描述 |
+| `activeForm` | string? | 进行时态，in_progress 时在 spinner 显示 |
+| `owner` | string? | 分配的 agent ID |
+| `status` | pending/in_progress/completed | 生命周期 |
+| `blocks` | string[] | 此任务阻塞的任务 ID（下游） |
+| `blockedBy` | string[] | 阻塞此任务的任务 ID（上游） |
+| `metadata` | Record? | 任意扩展键值对 |
 
-```text
-~/.claude/tasks/{taskListId}/{taskId}.json
-```
+存储位置：`~/.claude/tasks/{taskListId}/{id}.json`。每个任务一个文件。
 
-教学版只有一个工作区级 `.tasks` 目录，也只保存理解任务依赖所需的六个字段。
+### 二、不是 TodoWrite 的升级，是两个独立系统
 
-### 二、Task System 与 TodoWrite 是两套机制
+CC 中 Task System 和 TodoWrite **同时存在**，通过 `isTodoV2Enabled()` 切换（`utils/tasks.ts:133`）——交互式会话默认启用 Task（V2），非交互式/SDK 默认用 TodoWrite。环境变量 `CLAUDE_CODE_ENABLE_TASKS` 可强制启用 Task。Task 有 TodoWrite 没有的：文件锁并发保护、依赖强制执行、ownership、fs.watch 响应式监听、生命周期 hooks。
 
-真实实现并不是简单地把 TodoWrite 改名为 Task。交互式会话可以使用任务系统，部分非交互式或 SDK 场景仍可以使用 TodoWrite。Task System 额外提供文件持久化、依赖、ownership、并发保护和任务列表监听。
+### 三、并发认领的锁机制
 
-### 三、真实认领需要跨进程锁
+`claimTask()`（`utils/tasks.ts:541-612`）用双重锁防竞争：
 
-多个 agent 可能同时尝试认领同一个任务。真实实现会在锁内重新读取任务，再检查：
+**任务文件锁**：`proper-lockfile` 锁住 `{taskId}.json`（最多重试 30 次，指数退避 5-100ms）。锁内：
+1. 重新读取任务（防 TOCTOU）
+2. 检查已被他人认领 → `already_claimed`
+3. 检查已完成 → `already_resolved`
+4. 检查上游未完成 → `blocked`
+5. 设置 owner
 
-1. 是否已经被其他 agent 认领；
-2. 是否已经完成；
-3. 是否仍被上游任务阻塞；
-4. 当前 agent 是否已有其他未完成任务；
-5. 条件满足后才写入 owner。
+**列表级锁**（agent busy 检查时）：`.lock` 文件，原子性扫描所有任务并检查该 agent 是否已有其他 open task。
 
-“先读取、再写入”如果不在同一把锁内，会产生检查时与使用时不一致的问题。本章的 `RLock` 只演示当前进程内保护；多 agent、多进程场景需要真正的文件锁或数据库事务。
+注意：教学版把 claim 和开始工作合成一步（claim = set owner + in_progress）；真实 CC 的 `claimTask` 主要解决 owner 竞争，只设 owner 不改 status，状态更新由 `TaskUpdate` 完成。
 
-### 四、高水位标防止 ID 重用
+### 四、高水位标防 ID 重用
 
-真实任务目录还会记录已经分配过的最高任务 ID。即使旧任务文件被删除，新的任务也不会重新使用旧 ID。教学版使用时间戳和随机后缀，因此没有实现高水位文件。
+`.highwatermark` 文件记录曾分配过的最高任务 ID。即使任务被删除，ID 也不会被重用。
 
-### 五、真实工具把创建与更新分开
+### 五、四个 Task 工具
 
-真实系统通常暴露四类任务工具：TaskCreate、TaskGet、TaskUpdate、TaskList。TaskCreate 负责基础字段；状态、负责人和 `blocks` / `blockedBy` 关系主要由 TaskUpdate 维护。
+CC 的任务系统有四个工具（不是教学版的一个通用 Task 工具）：`TaskCreate`、`TaskGet`、`TaskUpdate`、`TaskList`。全部设置 `isConcurrencySafe: true` 和 `shouldDefer: true`（工具 schema 不在初始 prompt 中，需 ToolSearch 后才可见）。
 
-本章为了便于观察，把依赖直接放进 `create_task(blockedBy=...)`，并把两个常用状态动作拆成 `claim_task` 和 `complete_task`。另外，本章的 claim 同时设置 owner 并把状态改为 `in_progress`；真实实现中，认领与状态更新可以是分开的步骤。
-
-### 六、任务列表可以被响应式监听
-
-真实 Harness 可以监听任务目录变化。当另一个 agent 完成任务或更新 owner 时，界面和协作 agent 能够及时看到最新列表。本章每次调用 `list_tasks` 都从磁盘重新读取，保证显式查询得到真实状态，但没有实现文件系统 watcher。
+教学版的 `create_task(blockedBy=...)` 在创建时直接声明依赖，是合理简化。真实 CC 的 `TaskCreate` 只接受 subject/description/activeForm/metadata，依赖关系由 `TaskUpdate` 的 `addBlocks/addBlockedBy` 维护。
 
 </details>
+
+<!-- upstream-cc-source:end -->

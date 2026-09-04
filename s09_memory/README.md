@@ -1,6 +1,6 @@
 # s09: Memory — 让重要信息跨会话保留下来
 
-> **对齐状态**：本章 `code.py` 对齐上游 `s09_memory`；模型请求由 `harness/langchain_messages.py` 转换为 LangChain OpenAI-compatible 调用，循环和 Harness 机制保持上游结构。
+> **对齐状态**：本章 `code.py` 对齐上游 `s09_memory` 的结构；模型适配与本章机制在 `code.py` 中直接实现，使用 LangChain OpenAI-compatible 调用。
 [English](README.md) · [中文](README.zh.md) · [日本語](README.ja.md)
 
 s01 → ... → s07 → s08 → `s09` → [s10](../s10_task_system/) → s11 → ... → s16 → s17
@@ -947,11 +947,11 @@ python -m s09_memory.code
 
 </details>
 <!-- local-langchain-additions:end -->
----
 
-## 本项目保留的 Claude Code 源码补充
+<!-- upstream-cc-source:start -->
+## 深入 CC 源码
 
-> 以下内容来自本仓库原有 README，作为上游课程之外的源码研读补充。
+> 原文：[s09_memory](https://github.com/shareAI-lab/learn-claude-code/blob/67a9126c6435a8654ba7a6f68c0fd2130f00a462/s09_memory/README.md)。以下折叠块保持原文，文中的章号与源码行号沿用该版本。
 
 <details>
 <summary>深入 CC 源码</summary>
@@ -1038,3 +1038,5 @@ sessionMemoryCompact（s08 中提到的机制）正是使用了 Session Memory�
 - forked agent + 受限权限 → 直接调用：教学版没有子进程隔离
 
 </details>
+
+<!-- upstream-cc-source:end -->

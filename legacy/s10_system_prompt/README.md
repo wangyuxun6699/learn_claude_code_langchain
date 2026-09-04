@@ -663,6 +663,11 @@ System prompt 已经能根据运行状态动态组装，但 Agent 遇到网络�
 
 [s11: Error Recovery](../s11_error_recovery/) 将增加四条恢复路径：提高 token 上限、压缩上下文、指数退避和切换备用模型。
 
+<!-- upstream-cc-source:start -->
+## 深入 CC 源码
+
+> 原文：[s10_system_prompt](https://github.com/shareAI-lab/learn-claude-code/blob/67a9126c6435a8654ba7a6f68c0fd2130f00a462/s10_system_prompt/README.md)。以下折叠块保持原文，文中的章号与源码行号沿用该版本。
+
 <details>
 <summary>深入 CC 源码</summary>
 
@@ -692,9 +697,9 @@ getSystemPrompt(tools, model, additionalWorkingDirs?, mcpClients?): Promise<stri
 
 教学版的缓存只避免重复拼接字符串。CC 的三层缓存：
 
-1. **lodash memoize**：`getSystemContext` 和 `getUserContext` 在会话中缓存（`context.ts`）；
-2. **section 注册缓存**：`STATE.systemPromptSectionCache` 缓存动态 section 结果，`/clear` 或 `/compact` 时清除；
-3. **API 级缓存**：`splitSysPromptPrefix()`（`api.ts`）把 prompt 按 boundary 分成不同 cache scope 的块。
+1. **lodash memoize**：`getSystemContext` 和 `getUserContext` 在会话中缓存（`context.ts`）
+2. **section 注册缓存**：`STATE.systemPromptSectionCache` 缓存动态 section 结果，`/clear` 或 `/compact` 时清除
+3. **API 级缓存**：`splitSysPromptPrefix()`（`api.ts`）把 prompt 按 boundary 分成不同 cache scope 的块
 
 ### getUserContext vs getSystemContext
 
@@ -706,10 +711,10 @@ getSystemPrompt(tools, model, additionalWorkingDirs?, mcpClients?): Promise<stri
 
 ### 模式如何改变 prompt
 
-- **CLAUDE_CODE_SIMPLE**：整个 prompt 只有 2 行；
-- **Proactive/KAIROS**：用紧凑版 prompt 替换所有标准 section；
-- **Coordinator**：用协调器专用 prompt 完全替换；
-- **Agent 模式**：Agent 定义的 prompt 替换或追加到默认 prompt。
+- **CLAUDE_CODE_SIMPLE**：整个 prompt 只有 2 行
+- **Proactive/KAIROS**：用紧凑版 prompt 替换所有标准 section
+- **Coordinator**：用协调器专用 prompt 完全替换
+- **Agent 模式**：Agent 定义的 prompt 替换或追加到默认 prompt
 
 ### 总大小
 
@@ -717,3 +722,4 @@ getSystemPrompt(tools, model, additionalWorkingDirs?, mcpClients?): Promise<stri
 
 </details>
 
+<!-- upstream-cc-source:end -->

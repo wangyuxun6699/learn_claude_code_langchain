@@ -5,7 +5,7 @@
 
 框架选对了，代码量最多可以少一半。这个仓库基于 [LangChain](https://github.com/langchain-ai/langchain) 和 [LangGraph](https://github.com/langchain-ai/langgraph)，深入拆解 Claude Code 这类 coding agent 的 Harness。
 
-本项目已对齐 [shareAI-lab/learn-claude-code](https://github.com/shareAI-lab/learn-claude-code) 的 17 章源码结构（同步基线：`08263f49b3d5c895ea61d56a3737d8eebe624f20`）。章节中的 Agent Loop、工具协议、Hook、Context、Task、Team、Workflow 与 Goal 实现保留上游结构；本地适配主要集中在模型调用边界，由 [`harness/langchain_messages.py`](harness/langchain_messages.py) 转换成 **LangChain 1.x + OpenAI-compatible ChatModel** 调用。其余差异仅用于 Windows 文件换行、文件锁、Bash 子进程树回收和从任意工作目录启动章节，不改变各章机制。
+本项目已对齐 [shareAI-lab/learn-claude-code](https://github.com/shareAI-lab/learn-claude-code) 的 17 章源码结构（功能同步基线：`08263f49b3d5c895ea61d56a3737d8eebe624f20`；本次结构核对：main `0dcafa2ae053a1ddd6a72f265431104b08a5aa13`）。章节中的 Agent Loop、工具协议、Hook、Context、Task、Team、Workflow 与 Goal 实现保留上游结构；**LangChain 1.x + OpenAI-compatible ChatModel** 消息适配直接写在各章 `code.py` 内，Windows 文件锁和 Bash 子进程兼容实现也放在使用它们的章节中。
 
 > Agency 来自模型，Agent 产品 = 模型 + Harness。
 
@@ -257,7 +257,7 @@ Claude Code = 一个 agent loop
 
 ## 上游对齐与章节继承关系
 
-课程的阅读顺序是 s01 → s17，但源码并不是“后一章永远复制前一章的全部能力”。上游为了隔离单一机制，存在多条从 s04 基础内核分出的教学支线；只有 s15 会把需要的机制重新接回同一个完整 Harness。当前代码按以下关系对齐：
+课程的阅读顺序是 s01 → s17。下表的“代码基线”表示教学机制的演进关系，**不是 Python 的类继承或跨章 import**。s01–s14 在各自文件内直接实现本章需要的模型适配、工具、权限和循环；s17 也独立实现。与上游 main 一致，s15 通过文件加载复用 s09 的 Memory，s16 通过文件加载复用 s15 宿主，s15 不反向依赖 s16。
 
 | 章节 | 代码基线 | 本章加入或组合的机制 |
 |---|---|---|
@@ -279,7 +279,23 @@ Claude Code = 一个 agent loop
 | s16 | s15 宿主 | 追加 `Workflow` 工具、journal、resume 与结构化校验 |
 | s17 | s04 基础内核 | 独立 Goal evaluator 控制真正停止，与 s16 形成“如何做/是否完成”的概念衔接 |
 
-`code.py` 是同步后的带注释主实现；`code_uncommented.py` 由 [`scripts/build_uncommented.py`](scripts/build_uncommented.py) 从同一源码生成。章节中文 README 以同期上游 `README.zh.md` 为主体，并保留本仓库原有的“深入 Claude Code 源码”补充；合并工具见 [`scripts/merge_chapter_readmes.py`](scripts/merge_chapter_readmes.py)。
+`code.py` 是带注释主实现；`code_uncommented.py` 由 [`scripts/build_uncommented.py`](scripts/build_uncommented.py) 从同一源码生成。模型适配和平台兼容代码直接展开，阅读章节无需跳转到公共 `harness` 包。文件工具、路径检查和环境读取继续在各章按其教学范围实现。
+
+### “深入 CC 源码”原文来源
+
+源码研读区取自 [fix/s08-s20-sync-frontmatter-parser](https://github.com/shareAI-lab/learn-claude-code/tree/67a9126c6435a8654ba7a6f68c0fd2130f00a462)，保留完整折叠块、嵌套内容、表格、源码行号和原章节编号。来源与逐块 SHA-256 记录在 [`upstream.lock.json`](upstream.lock.json)。原文中的“教学版”和章号指该旧版本，主线代码关系以上表为准。
+
+| 本地章节 | 原文所在旧章节 |
+|---|---|
+| s01–s09 | 同名章节 |
+| s10 Task / s11 Background / s12 Cron | s12 / s13 / s14 |
+| s13 Agent Teams | s15 Teams、s16 Protocols、s17 Autonomous、s18 Worktree |
+| s14 MCP | s19 MCP |
+| s15 Integrated Harness | s20 没有源码研读块，留空 |
+| s16 Workflow / s17 Goal | 指定版本没有这两章，留空 |
+| legacy 中的旧章节 | 各自同名旧章节 |
+
+同步原文使用 `python scripts/sync_cc_source_readmes.py <指定提交的上游目录>`。[`scripts/merge_chapter_readmes.py`](scripts/merge_chapter_readmes.py) 更新正文时会保留该原文区，包括没有原文的空区。
 
 
 
@@ -484,7 +500,7 @@ learn_claude_code/
 │   └── README.md
 ├── legacy/                  # 20 章旧编排中移除/合并的章节（存档）
 ├── skills/                  # s07 可扫描的示例 Skills
-├── harness/                 # 各章共用的安全/路径/IO 内核（单一实现，避免漂移）
+├── harness/                 # 历史公共工具与兼容测试；章节代码不依赖此包
 ├── tests/                   # harness 单测 + 全库 py_compile 冒烟
 ├── pyproject.toml           # min Python 3.11 + ruff + pytest 配置
 ├── requirements-dev.txt     # pytest + ruff

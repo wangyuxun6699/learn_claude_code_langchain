@@ -1,6 +1,6 @@
 # s15: Agent Harness 集成 — 多种机制，一个循环
 
-> **对齐状态**：本章 `code.py` 对齐上游 `s15_integrated_harness`；模型请求由 `harness/langchain_messages.py` 转换为 LangChain OpenAI-compatible 调用，循环和 Harness 机制保持上游结构。
+> **对齐状态**：本章 `code.py` 对齐上游 `s15_integrated_harness` 的结构；模型适配与平台兼容代码在本章直接实现，Memory 按上游复用 s09，使用 LangChain OpenAI-compatible 调用。
 [English](README.md) · [中文](README.zh.md) · [日本語](README.ja.md)
 
 s01 → ... → s13 → [s14](../s14_mcp_plugin/) → `s15` → [s16](../s16_workflow_runtime/) → s17
@@ -377,32 +377,8 @@ python -m s15_integrated_harness.code
 
 </details>
 <!-- local-langchain-additions:end -->
----
 
-## 本项目保留的 Claude Code 源码补充
+<!-- upstream-cc-source:start -->
+## 深入 CC 源码
 
-> 以下内容来自本仓库原有 README，作为上游课程之外的源码研读补充。
-
-<details>
-<summary>深入 CC 源码</summary>
-
-> 以下为机制级对照：s15 不引入新机制，只把前面各章挂回一个循环——这正是 Claude Code 那条 1700+ 行 query loop 的集成形态（见 s01 的“深入 CC 源码”）。本仓库 s01–s14 拆开的每块机制，在真实 CC 里是“一个 loop + 挂在循环各位置的 hook / 权限 / 压缩 / 恢复”。
-
-### 一、CC 的“集成”是回到一个 query loop
-
-CC 没有为每个机制单起一个运行时；权限、PreToolUse / PostToolUse、上下文压缩、错误恢复、后台与 cron 通知，全部挂在同一个 agent loop 的各个 hook 点上（s01 的 State 对象 10 个字段就是这些机制的状态）。s15 的教学价值在于让你看清：前面每一章，究竟是这条循环上哪个位置的一块拼图。
-
-### 二、LangChain 版如何把这些位置落到代码
-
-- hook / 权限 → middleware（`wrap_tool_call` / 权限检查）
-- 动态系统提示（记忆 + skills + MCP 状态）→ 动态 prompt / `assemble_system_prompt`
-- 动态工具池 → 手写 LangGraph 工具节点（与 s14 相同）
-- 后台 / cron 通知注入 → `before_model` middleware 在模型调用前把通知追加进 `messages`
-- 错误恢复 → 模型调用处指数退避 + 上下文超长裁剪重试
-
-也就是说：`create_agent` 提供标准模型-工具循环，其余机制用 middleware / 图节点挂在循环外面，而不是写进循环里——这正是 s04“挂在循环上，不写进循环里”的集成版。
-
-### 三、教学版走捷径的代价
-
-本章对 s13 的团队 / 协议与 worktree、s12 的完整 5 字段 cron 都做了简化，并在 README 明确指回对应章节。真实 CC 的集成是全部能力在线；教学版有权选择“哪些机制本章演示、哪些回原章节看”，但要清楚这只是一个教学 runtime，不是 CC 的逐行复刻。
-</details>
+<!-- upstream-cc-source:end -->

@@ -5,7 +5,7 @@ import py_compile
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 EXCLUDE = {
     "venv", ".git", "__pycache__", ".pytest_cache",
-    ".runtime", ".tasks", ".memory", ".task_outputs",
+    ".runtime", ".tasks", ".memory", ".task_outputs", ".ref-repo",
 }
 
 

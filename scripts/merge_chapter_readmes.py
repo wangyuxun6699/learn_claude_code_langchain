@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""合并上游中文章节 README，并保留本仓库的“深入源码”补充。"""
+"""合并上游中文章节 README，并保留已同步的源码原文区（包括空区）。"""
 from __future__ import annotations
 
 import argparse
@@ -15,6 +15,8 @@ DEEP_SUMMARIES = (
 )
 LOCAL_START = "<!-- local-langchain-additions:start -->"
 LOCAL_END = "<!-- local-langchain-additions:end -->"
+SOURCE_START = "<!-- upstream-cc-source:start -->"
+SOURCE_END = "<!-- upstream-cc-source:end -->"
 
 
 def extract_deep_details(text: str) -> str:
@@ -81,9 +83,15 @@ def merge(upstream: str, local: str, chapter: str) -> str:
     first_line, remainder = canonical.split("\n", 1)
     note = (
         f"> **对齐状态**：本章 `code.py` 对齐上游 `{chapter}`；"
-        "模型请求由 `harness/langchain_messages.py` 转换为 LangChain "
-        "OpenAI-compatible 调用，循环和 Harness 机制保持上游结构。"
+        "LangChain OpenAI-compatible 模型适配在章节代码中直接实现，"
+        "跨章复用保持上游结构。"
     )
+    source_section = ""
+    if SOURCE_START in local:
+        start = local.index(SOURCE_START)
+        end = local.index(SOURCE_END, start) + len(SOURCE_END)
+        source_section = local[start:end]
+        local = local[:start] + local[end:]
     deep = extract_deep_details(local)
     local_additions = extract_local_additions(local, deep)
     pieces = [first_line, "", note, remainder.strip()]
@@ -101,7 +109,9 @@ def merge(upstream: str, local: str, chapter: str) -> str:
                 LOCAL_END,
             ]
         )
-    if deep:
+    if source_section:
+        pieces.extend(["", source_section])
+    elif deep:
         pieces.extend(
             [
                 "---",

@@ -1,6 +1,6 @@
 # s02: Tool Use — 多加一个工具，只加一行
 
-> **对齐状态**：本章 `code.py` 对齐上游 `s02_tool_use`；模型请求由 `harness/langchain_messages.py` 转换为 LangChain OpenAI-compatible 调用，循环和 Harness 机制保持上游结构。
+> **对齐状态**：本章 `code.py` 对齐上游 `s02_tool_use` 的结构；模型适配与本章机制在 `code.py` 中直接实现，使用 LangChain OpenAI-compatible 调用。
 [English](README.md) · [中文](README.zh.md) · [日本語](README.ja.md)
 
 s01 → `s02` → [s03](../s03_permission/) → s04 → ... → s16 → s17
@@ -243,11 +243,11 @@ s03 Permission → 在工具执行之前加一道门：这个操作安全吗？�
 
 </details>
 <!-- local-langchain-additions:end -->
----
 
-## 本项目保留的 Claude Code 源码补充
+<!-- upstream-cc-source:start -->
+## 深入 CC 源码
 
-> 以下内容来自本仓库原有 README，作为上游课程之外的源码研读补充。
+> 原文：[s02_tool_use](https://github.com/shareAI-lab/learn-claude-code/blob/67a9126c6435a8654ba7a6f68c0fd2130f00a462/s02_tool_use/README.md)。以下折叠块保持原文，文中的章号与源码行号沿用该版本。
 
 <details>
 <summary>深入 CC 源码</summary>
@@ -311,3 +311,5 @@ CC 的 `StreamingToolExecutor`（`StreamingToolExecutor.ts`）让工具在模型
 每个工具有一个 `maxResultSizeChars` 字段。结果超过这个值就落盘，模型看到的是预览 + 文件路径。FileRead 特殊——设为 `Infinity`，防止读文件的输出又被当成文件落盘。具体来说，如果 FileRead 的结果超过阈值被落盘，模型下次读那个落盘文件时又会触发落盘 → 无限循环（读文件 → 落盘 → 再读 → 再落盘 → ...）。
 
 </details>
+
+<!-- upstream-cc-source:end -->

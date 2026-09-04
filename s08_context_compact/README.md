@@ -1,6 +1,6 @@
 # s08: Context Compact：上下文总会满，先整理，再总结
 
-> **对齐状态**：本章 `code.py` 对齐上游 `s08_context_compact`；模型请求由 `harness/langchain_messages.py` 转换为 LangChain OpenAI-compatible 调用，循环和 Harness 机制保持上游结构。
+> **对齐状态**：本章 `code.py` 对齐上游 `s08_context_compact` 的结构；模型适配与本章机制在 `code.py` 中直接实现，使用 LangChain OpenAI-compatible 调用。
 [English](README.md) · [中文](README.zh.md) · [日本語](README.ja.md)
 
 s01 → s02 → s03 → s04 → s05 → s06 → s07 → `s08` → [s09](../s09_memory/) → s10 → ... → s16 → s17
@@ -740,11 +740,11 @@ s09 Memory → 三个子系统：选择记什么、提取关键信息、整理�
 
 </details>
 <!-- local-langchain-additions:end -->
----
 
-## 本项目保留的 Claude Code 源码补充
+<!-- upstream-cc-source:start -->
+## 深入 CC 源码
 
-> 以下内容来自本仓库原有 README，作为上游课程之外的源码研读补充。
+> 原文：[s08_context_compact](https://github.com/shareAI-lab/learn-claude-code/blob/67a9126c6435a8654ba7a6f68c0fd2130f00a462/s08_context_compact/README.md)。以下折叠块保持原文，文中的章号与源码行号沿用该版本。
 
 <details>
 <summary>深入 CC 源码</summary>
@@ -826,3 +826,5 @@ CC 的压缩 prompt 有两个硬性要求：
 核心设计思想，便宜的先跑贵的后跑，完整保留。
 
 </details>
+
+<!-- upstream-cc-source:end -->

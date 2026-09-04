@@ -1,6 +1,6 @@
 # s04: Hooks — 挂在循环上，不写进循环里
 
-> **对齐状态**：本章 `code.py` 对齐上游 `s04_hooks`；模型请求由 `harness/langchain_messages.py` 转换为 LangChain OpenAI-compatible 调用，循环和 Harness 机制保持上游结构。
+> **对齐状态**：本章 `code.py` 对齐上游 `s04_hooks` 的结构；模型适配与本章机制在 `code.py` 中直接实现，使用 LangChain OpenAI-compatible 调用。
 [English](README.md) · [中文](README.zh.md) · [日本語](README.ja.md)
 
 s01 → s02 → s03 → `s04` → [s05](../s05_todo_write/) → s06 → ... → s16 → s17
@@ -796,11 +796,11 @@ s05 TodoWrite → 给 Agent 一个计划工具。先列清单，再做。
 
 </details>
 <!-- local-langchain-additions:end -->
----
 
-## 本项目保留的 Claude Code 源码补充
+<!-- upstream-cc-source:start -->
+## 深入 CC 源码
 
-> 以下内容来自本仓库原有 README，作为上游课程之外的源码研读补充。
+> 原文：[s04_hooks](https://github.com/shareAI-lab/learn-claude-code/blob/67a9126c6435a8654ba7a6f68c0fd2130f00a462/s04_hooks/README.md)。以下折叠块保持原文，文中的章号与源码行号沿用该版本。
 
 <details>
 <summary>深入 CC 源码</summary>
@@ -861,3 +861,5 @@ PostToolUse hooks 返回 `preventContinuation: true` 时，会产生一个 `hook
 - stopHookActive → 省略：教学版 Stop hook 只做简单续跑，不涉及防无限循环机制
 
 </details>
+
+<!-- upstream-cc-source:end -->

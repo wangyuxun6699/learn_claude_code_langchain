@@ -1,6 +1,6 @@
 # s17: Goal Loop：模型提出停止，独立判断器决定是否继续
 
-> **对齐状态**：本章 `code.py` 对齐上游 `s17_goal_loop`；模型请求由 `harness/langchain_messages.py` 转换为 LangChain OpenAI-compatible 调用，循环和 Harness 机制保持上游结构。
+> **对齐状态**：本章 `code.py` 对齐上游 `s17_goal_loop` 的结构；模型适配与本章机制在 `code.py` 中直接实现，使用 LangChain OpenAI-compatible 调用。
 [English](README.md) · [中文](README.zh.md) · [日本語](README.ja.md)
 
 s01 → ... → s15 → [s16](../s16_workflow_runtime/) → `s17`
@@ -392,34 +392,8 @@ s17 回答"整个任务是否完成"。一个 Workflow 可能成功跑完，而�
 
 </details>
 <!-- local-langchain-additions:end -->
----
 
-## 本项目保留的 Claude Code 源码补充
+<!-- upstream-cc-source:start -->
+## 深入 CC 源码
 
-> 以下内容来自本仓库原有 README，作为上游课程之外的源码研读补充。
-
-<details>
-<summary>深入 CC 源码</summary>
-
-> 以下为概念级对照：Claude Code 没有 `/goal` 命令（那是教学为显式化“可检查的完成条件”引入的语法）。但“独立判断是否继续循环”对应 CC 的 Stop hook、max turns 与异步续轮等真实机制。以下只做概念对应，不逐行对应 CC 源码。
-
-### 一、CC 的停止判断在模型自身 + Stop hook，没有独立 goal 评估模型
-
-CC 在模型想停时由 Stop hook（s04 讲过）插入检查，循环是否继续主要看有没有 tool_use 与轮数预算。本仓库的 Goal 评估器（一个无工具的独立模型调用，只读对话判断完成条件）是 LLM-as-judge 的教学实现，用来演示“执行者”与“判断者”分权——主模型可能乐观，判断器要据证据冷读。
-
-### 二、“可检查的完成条件”是真实需求，`/goal` 是教学语法
-
-CC 工程实践里确实要求验收标准可执行、可验证；但 CC 没有 `/goal` 命令语法。教学用“终态 / 检查命令 / 约束”三件事一次说清，避免“把代码弄好”这种无法判断的条件。
-
-### 三、“没完成就 continue”对应 CC 的续轮机制
-
-判断器认为不满足时，把理由追加回 `messages` 并直接 `continue`，对应 CC 里“后台任务完成 / 压缩 / 恢复”后自动续轮的那类“无需用户再输入”的 continuation（见 s01 的 transition 字段与 s11 的后台通知注入）。区别在于：CC 的续轮由任务完成或恢复触发，本仓库由 goal 判断器在返回边界主动触发。
-
-### 四、自动续轮必须有出口
-
-本仓库在 goal 外保留 `MAX_TURNS` 与连续 block 上限两道出口，对应 CC 的 maxTurns 与恢复计数上限（s01 State 对象里的第 10、11 号字段）。到上限就交还用户、不伪装完成、不悄悄清目标；评估器自身出错也走同一原则（停止续轮、保留目标、报告错误）。
-
-### 五、判断器只读对话，验证仍靠工具
-
-Goal Loop 不是测试框架：工具负责真实验证，判断器只判断“验证结果是否已经出现在工作记录里”，并且不能假设没报告的命令已成功。这避免了判断器脑补，也让“后台任务没结束时先不判断”（defer、等通知回对话）成为必要。
-</details>
+<!-- upstream-cc-source:end -->

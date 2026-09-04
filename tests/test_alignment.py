@@ -1,12 +1,20 @@
 from __future__ import annotations
 
 import ast
+import hashlib
 import json
+import os
+import shutil
+import subprocess
+import sys
 from pathlib import Path
 
+import pytest
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from test_agent_loop_boundaries import load_lesson
 
-from harness import langchain_messages
+from scripts.merge_chapter_readmes import extract_deep_details, merge
+from scripts.sync_cc_source_readmes import END, START
 
 ROOT = Path(__file__).resolve().parents[1]
 CHAPTERS = sorted(ROOT.glob("s[0-9][0-9]_*"))
@@ -42,7 +50,9 @@ def test_uncommented_sources_have_the_same_python_ast() -> None:
         ), chapter.name
 
 
-def test_langchain_message_adapter_preserves_tool_protocol(monkeypatch) -> None:
+@pytest.mark.parametrize("chapter", CHAPTERS[:15], ids=lambda path: path.name)
+def test_langchain_message_adapter_preserves_tool_protocol(monkeypatch, tmp_path, chapter) -> None:
+    langchain_messages = load_lesson(tmp_path, chapter / "code.py")
     calls: dict = {}
 
     class FakeRunnable:
@@ -128,3 +138,76 @@ def test_langchain_message_adapter_preserves_tool_protocol(monkeypatch) -> None:
     assert isinstance(calls["messages"][1], HumanMessage)
     assert isinstance(calls["messages"][2], AIMessage)
     assert isinstance(calls["messages"][3], ToolMessage)
+
+
+def test_cc_source_blocks_match_the_pinned_originals() -> None:
+    record = json.loads((ROOT / "upstream.lock.json").read_text(encoding="utf-8"))["cc_source_readmes"]
+    assert record["commit"] == "67a9126c6435a8654ba7a6f68c0fd2130f00a462"
+    for chapter, sources in record["chapters"].items():
+        text = (ROOT / chapter / "README.md").read_text(encoding="utf-8")
+        assert text.count(START) == text.count(END) == 1
+        section = text.split(START, 1)[1].split(END, 1)[0]
+        hashes = []
+        while block := extract_deep_details(section):
+            hashes.append(hashlib.sha256(block.encode("utf-8")).hexdigest())
+            section = section.replace(block, "", 1)
+        assert hashes == [source["sha256"] for source in sources if source["sha256"]], chapter
+        if not hashes:
+            assert section.strip() == "## 深入 CC 源码", chapter
+            assert not extract_deep_details(text), chapter
+
+
+@pytest.mark.parametrize("chapter", ["s13_agent_teams", "s15_integrated_harness", "s16_workflow_runtime"])
+def test_readme_merge_keeps_all_original_blocks_or_an_empty_section(chapter) -> None:
+    local = (ROOT / chapter / "README.md").read_text(encoding="utf-8")
+    section = local.split(START, 1)[1].split(END, 1)[0]
+    result = merge("# Updated lesson\n\nNew teaching content.\n", local, chapter)
+    assert result.split(START, 1)[1].split(END, 1)[0] == section
+    assert result.count(START) == result.count(END) == 1
+
+
+def test_lessons_do_not_import_the_shared_harness() -> None:
+    paths = [*ROOT.glob("s*/code*.py"), *ROOT.glob("legacy/s*/code*.py")]
+    for path in paths:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom):
+                assert not (node.module or "").startswith("harness"), path
+            elif isinstance(node, ast.Import):
+                assert not any(alias.name.startswith("harness") for alias in node.names), path
+
+
+@pytest.mark.parametrize("chapter", [
+    "s01_agent_loop", "s11_background_tasks", "s17_goal_loop",
+])
+def test_chapter_starts_from_a_single_copied_file(tmp_path, chapter) -> None:
+    # Exercise actual CLI imports outside the repository, including Goal's
+    # lazy model adapter and Windows process helpers.
+    script = tmp_path / "code.py"
+    shutil.copy2(ROOT / chapter / "code.py", script)
+    env = {
+        **os.environ,
+        "PYTHONPATH": "",
+        "PYTHON_DOTENV_DISABLED": "1",
+        "MODEL_ID": "test-model",
+        "OPENAI_API_KEY": "test-key",
+        "BASE_URL": "https://example.invalid/v1",
+    }
+    result = subprocess.run(
+        [sys.executable, str(script)], input="q\n", cwd=tmp_path, env=env,
+        capture_output=True, text=True, errors="replace", timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_team_file_locks_import_without_the_repository(tmp_path) -> None:
+    # Load the copied runtime without entering the existing POSIX select-based
+    # CLI; file locking must remain usable on Windows as well as Unix.
+    script = tmp_path / "code.py"
+    shutil.copy2(ROOT / "s13_agent_teams" / "code.py", script)
+    env = {**os.environ, "PYTHONPATH": "", "PYTHON_DOTENV_DISABLED": "1", "MODEL_ID": "test-model"}
+    result = subprocess.run(
+        [sys.executable, "-c", "import runpy; runpy.run_path('code.py')"],
+        cwd=tmp_path, env=env, capture_output=True, text=True, errors="replace", timeout=30,
+    )
+    assert result.returncode == 0, result.stderr

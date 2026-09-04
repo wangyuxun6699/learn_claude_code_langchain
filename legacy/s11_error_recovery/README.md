@@ -574,6 +574,11 @@ Agent 现在能在错误中自动恢复了。但它处理的任务仍然是"一�
 
 s12 Task System → 任务是有依赖、有状态、持久化的图。这是多 Agent 协作的基础。
 
+<!-- upstream-cc-source:start -->
+## 深入 CC 源码
+
+> 原文：[s11_error_recovery](https://github.com/shareAI-lab/learn-claude-code/blob/67a9126c6435a8654ba7a6f68c0fd2130f00a462/s11_error_recovery/README.md)。以下折叠块保持原文，文中的章号与源码行号沿用该版本。
+
 <details>
 <summary>深入 CC 源码</summary>
 
@@ -652,3 +657,4 @@ Token budget 的"继续"不是无限的。当连续 3 次 continuation 且 token
 
 </details>
 
+<!-- upstream-cc-source:end -->

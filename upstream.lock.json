@@ -5,10 +5,164 @@
   "synced_at": "2026-09-01",
   "scope": "s01 至 s17 的 code.py、中文章节 README、上游机制回归测试与 agent-builder 更新",
   "local_adaptations": [
-    "以 harness.langchain_messages.LangChainMessagesClient 替换 Anthropic 客户端边界",
+    "LangChainMessagesClient 消息适配直接实现在使用它的章节内",
     "使用 OPENAI_API_KEY、BASE_URL、MODEL_ID 和可选的 FALLBACK_MODEL_ID",
     "README 只保留中文版本",
-    "保留本仓库原有的‘深入 CC 源码’补充",
-    "增加 Windows 文件锁、换行、Bash 与子进程树兼容层"
-  ]
+    "深入 CC 源码使用指定旧分支原文，无原文章节留空",
+    "Windows 文件锁和 Bash 子进程树兼容实现展开到对应章节"
+  ],
+  "cc_source_readmes": {
+    "repository": "https://github.com/shareAI-lab/learn-claude-code",
+    "branch": "fix/s08-s20-sync-frontmatter-parser",
+    "commit": "67a9126c6435a8654ba7a6f68c0fd2130f00a462",
+    "chapters": {
+      "s01_agent_loop": [
+        {
+          "path": "s01_agent_loop/README.md",
+          "sha256": "a2a8e6a43246a5bf19e5415fb3ce7e51cc1eaf47b2c35cc678fe38f1204a38da"
+        }
+      ],
+      "s02_tool_use": [
+        {
+          "path": "s02_tool_use/README.md",
+          "sha256": "bf866bd1d191b420293e8826fcef20c942fe28f0e6b9f3998c9a1e10fd65ac2f"
+        }
+      ],
+      "s03_permission": [
+        {
+          "path": "s03_permission/README.md",
+          "sha256": "c30388002465b343c1f1b32e144f134d55a9fc2a835c64a40f768078ab0a9248"
+        }
+      ],
+      "s04_hooks": [
+        {
+          "path": "s04_hooks/README.md",
+          "sha256": "5c84a6f9928df76100efdf679c7c9a9a49e9e3d7b7aa8381bf5b8901a99ad1df"
+        }
+      ],
+      "s05_todo_write": [
+        {
+          "path": "s05_todo_write/README.md",
+          "sha256": "a6d4812aa20e5361d6249b3ae2bcb2704114648e850b884ccc0e1c40d1ef54ae"
+        }
+      ],
+      "s06_subagent": [
+        {
+          "path": "s06_subagent/README.md",
+          "sha256": "e25e5da5566bd9f404268314cbd2f88cbc2d54d215d806105f2ce2fa837073f0"
+        }
+      ],
+      "s07_skill_loading": [
+        {
+          "path": "s07_skill_loading/README.md",
+          "sha256": "6209c20ab810725094975124fe2a7c2e0550a8f5046006d2c92f89431f439918"
+        }
+      ],
+      "s08_context_compact": [
+        {
+          "path": "s08_context_compact/README.md",
+          "sha256": "96080c39b21d7029cf4963172ec22e1969e9a1c9507524e41bae7832543c9e6c"
+        }
+      ],
+      "s09_memory": [
+        {
+          "path": "s09_memory/README.md",
+          "sha256": "6e3c3745627c1da0d0f475c0fc1c699b45be55ee63851c66307a24317fa56b23"
+        }
+      ],
+      "s10_task_system": [
+        {
+          "path": "s12_task_system/README.md",
+          "sha256": "aa1fc31f3432d920413aa9894c2a3798eba94fdd3750f02332f51e7d23ca05ac"
+        }
+      ],
+      "s11_background_tasks": [
+        {
+          "path": "s13_background_tasks/README.md",
+          "sha256": "6e9aad50998ddaf5d27bb722dd6e6074a7394a87176433351ced6bdc02e15ae5"
+        }
+      ],
+      "s12_cron_scheduler": [
+        {
+          "path": "s14_cron_scheduler/README.md",
+          "sha256": "27005af418f8dc261e34cc04c9eec189bfaddde5928329ecac4f25d6e1f57a1d"
+        }
+      ],
+      "s13_agent_teams": [
+        {
+          "path": "s15_agent_teams/README.md",
+          "sha256": "6582f61ecc134561aea5340f3e44b4d61cae953e4c2b3828b062ad375cf32e3e"
+        },
+        {
+          "path": "s16_team_protocols/README.md",
+          "sha256": "5f410587298c67c693b42668cbda6494c1de5564a8ec2743487e4ece0a9a367b"
+        },
+        {
+          "path": "s17_autonomous_agents/README.md",
+          "sha256": "ec9794f8fd384b3a8b478a9ebeba878a0700b9c8b3b8645067b8bfa08ca72652"
+        },
+        {
+          "path": "s18_worktree_isolation/README.md",
+          "sha256": "1c15e88ac8bc065dabebc51bbba8b321a2f85681659462115f5bf9ac0cf8f911"
+        }
+      ],
+      "s14_mcp_plugin": [
+        {
+          "path": "s19_mcp_plugin/README.md",
+          "sha256": "5247c27dd6b78c236f4ccb4bc8e224f4a4ea92faa59ad95d4250d2fac9e2c903"
+        }
+      ],
+      "s15_integrated_harness": [
+        {
+          "path": "s20_comprehensive/README.md",
+          "sha256": null
+        }
+      ],
+      "s16_workflow_runtime": [],
+      "s17_goal_loop": [],
+      "legacy/s10_system_prompt": [
+        {
+          "path": "s10_system_prompt/README.md",
+          "sha256": "c06dbed5d8a55bddfa249d8884baaa11bac63263988860670bc60688a2769d65"
+        }
+      ],
+      "legacy/s11_error_recovery": [
+        {
+          "path": "s11_error_recovery/README.md",
+          "sha256": "1506b60eb7baec7141aa84f65adbcce2fbd2071c9ddf54f6189fe3c8f11d66f1"
+        }
+      ],
+      "legacy/s16_team_protocols": [
+        {
+          "path": "s16_team_protocols/README.md",
+          "sha256": "5f410587298c67c693b42668cbda6494c1de5564a8ec2743487e4ece0a9a367b"
+        }
+      ],
+      "legacy/s17_autonomous_agents": [
+        {
+          "path": "s17_autonomous_agents/README.md",
+          "sha256": "ec9794f8fd384b3a8b478a9ebeba878a0700b9c8b3b8645067b8bfa08ca72652"
+        }
+      ],
+      "legacy/s18_worktree_isolation": [
+        {
+          "path": "s18_worktree_isolation/README.md",
+          "sha256": "1c15e88ac8bc065dabebc51bbba8b321a2f85681659462115f5bf9ac0cf8f911"
+        }
+      ]
+    }
+  },
+  "structure_reference": {
+    "branch": "main",
+    "commit": "0dcafa2ae053a1ddd6a72f265431104b08a5aa13",
+    "checked_at": "2026-09-03",
+    "runtime_reuse": {
+      "s15_integrated_harness": [
+        "s09_memory"
+      ],
+      "s16_workflow_runtime": [
+        "s15_integrated_harness"
+      ]
+    }
+  }
 }

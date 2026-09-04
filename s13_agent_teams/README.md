@@ -1,6 +1,6 @@
 # s13: Agent Teams — 团队运行时与协作协议
 
-> **对齐状态**：本章 `code.py` 对齐上游 `s13_agent_teams`；模型请求由 `harness/langchain_messages.py` 转换为 LangChain OpenAI-compatible 调用，循环和 Harness 机制保持上游结构。
+> **对齐状态**：本章 `code.py` 对齐上游 `s13_agent_teams` 的结构；模型适配与本章机制在 `code.py` 中直接实现，使用 LangChain OpenAI-compatible 调用。
 [English](README.md) · [中文](README.zh.md) · [日本語](README.ja.md)
 
 s01 → ... → [s10](../s10_task_system/) → `s13` → [s14](../s14_mcp_plugin/) → s15 → s16 → s17
@@ -883,34 +883,185 @@ s13 已经能在 Lead 和 Teammate 之间交接控制权。新版 17 章编排�
 
 </details>
 <!-- local-langchain-additions:end -->
----
 
-## 本项目保留的 Claude Code 源码补充
+<!-- upstream-cc-source:start -->
+## 深入 CC 源码
 
-> 以下内容来自本仓库原有 README，作为上游课程之外的源码研读补充。
+> 原文：[s15_agent_teams](https://github.com/shareAI-lab/learn-claude-code/blob/67a9126c6435a8654ba7a6f68c0fd2130f00a462/s15_agent_teams/README.md)。以下折叠块保持原文，文中的章号与源码行号沿用该版本。
 
 <details>
 <summary>深入 CC 源码</summary>
 
-> 本章为机制级对照：Claude Code 真实实现里并没有“命名队友 + 文件收件箱”这套东西，参考仓库和本 LangChain 版本都是为教学把“多 Agent 协作”拆成可读的抽象。以下不逐行对应 CC 源码，只讲清真实 CC 怎么做、教学版各自简化和改写了什么。
+> 以下基于 CC 源码 `spawnMultiAgent.ts`、`useInboxPoller.ts`（969 行）、`useSwarmPermissionPoller.ts`（330 行）、`teammateMailbox.ts`、`teamHelpers.ts` 的完整分析。
 
-### 一、CC 的委派本质是“一次性 subagent”，不是“持久队友”
+### 一、没有中央消息总线，是文件系统
 
-Claude Code 里最接近“委派”的是 Task/subagent 工具（本仓库 s06 的对应物）：主 agent 每次调用都新建一个隔离的上下文，跑完只回传最终结果，然后销毁；没有跨任务保留身份的“队友线程”，也没有 WORK/IDLE 生命周期。参考仓库引入“持久队友”，是为了给“结果与空闲分开表达”“空闲队友自动认领 ready task”“队友与 Lead 之间有显式关机 / 审批协议”这些概念一个落点；它们都是教学抽象，不是 CC 源码里的某个组件。
+教学版用 `MessageBus` 类收发消息。CC 的做法更直接，每个 Agent 直接写其他 Agent 的收件箱文件。
 
-### 二、“MessageBus 文件邮箱”是教学版的异步通道模拟
+收件箱路径：`~/.claude/teams/{teamName}/inboxes/{agentName}.json`
 
-CC 的 subagent 结果作为工具结果同步回传主循环，不存在演员之间通过 JSONL 邮箱互发消息的机制。参考仓库用文件收件箱演示“通信放在模型上下文之外”；本 LangChain 版改用一张父级 `StateGraph` 里的两个子图，通过 `Command` 在父子图之间切换控制权。三者目标一致（不让一个队友的工具结果污染另一个的推理），实现分别是文件收件箱、类型化邮箱消息、图状态 + `Command`。
+写入时用 `proper-lockfile` 文件锁保证并发安全（最多重试 10 次）。每个文件是一个 JSON 数组，append 新消息时读→追加→写回。
 
-### 三、任务认领与依赖图，对应 CC 的 TodoWrite 与任务系统
+### 二、15 种消息类型
 
-“空闲队友原子认领 ready task”是团队版的教学简化。CC 有 TodoWrite（会话内清单）和持久化任务系统（s10）；多 agent 竞争同一任务时的跨进程锁、高水位 ID，都属于 s10 任务系统的课题，而不是“队友抢任务”这个教学场景本身。
+CC 的团队通信有 15 种结构化消息（`teammateMailbox.ts`）：
 
-### 四、worktree 隔离才是 CC 真实存在的并行机制
+| 类型 | 方向 | 用途 |
+|------|------|------|
+| `plain text` | 双向 | 普通队友间通信 |
+| `idle_notification` | 队友→Lead | 队友完成一轮工作，进入空闲 |
+| `permission_request` | 队友→Lead | 队友需要操作审批 |
+| `permission_response` | Lead→队友 | Lead 审批结果 |
+| `plan_approval_request` | 队友→Lead | 队友提交计划待审 |
+| `plan_approval_response` | Lead→队友 | Lead 审批计划 |
+| `shutdown_request` | Lead→队友 | 请求体面关机 |
+| `shutdown_approved` | 队友→Lead | 确认关机 |
+| `shutdown_rejected` | 队友→Lead | 拒绝关机（附原因） |
+| `task_assignment` | Lead→队友 | 分配任务 |
+| `team_permission_update` | Lead→队友 | 广播权限变更 |
+| `mode_set_request` | Lead→队友 | 修改队友的权限模式 |
+| `sandbox_permission_*` | 双向 | 网络权限请求/回复 |
+| `teammate_terminated` | 系统 | 队友被移除通知 |
 
-CC 确实用 git worktree 给并行任务分隔工作目录（本仓库 legacy 里 s18 Worktree Isolation 的来源）。参考仓库把它并入 s13 作为“任务绑定的 worktree”；本 LangChain 版为聚焦 handoff 没有实现 worktree，只保留“共享工作目录”这一最小假设。
+文本消息被包装在 `<teammate-message>` XML 标签中交付给模型。
 
-### 五、本 LangChain 版的取舍
+### 三、权限冒泡：双向轮询
 
-本仓库最终做的是“Agent Teams 的最小 handoff 内核”：Lead / Teammate 是同一张 `StateGraph` 里顺序切换的两个 `create_agent` 子图，共享 `messages`，用 `Command.PARENT` + `goto` 交接控制权。它刻意省略了并行队友、驻留多身份、每-agent 私有上下文、持久化 checkpointer 与 worktree——这些在参考仓库 / 真实 CC 里分别对应线程、命名队友、线程收件箱、会话状态与 git worktree。
+教学版省略了权限冒泡。CC 的实际流程（`permissionSync.ts`）：
+
+1. **队友**遇到需要审批的操作 → 发 `permission_request` 到 Lead 的收件箱
+2. **Lead** 的 `useInboxPoller`（每 1 秒轮询）检测到请求 → 路由到 `ToolUseConfirmQueue`
+3. Lead 的 UI 显示审批对话框，带队友名字和颜色
+4. 用户审批后 → Lead 发 `permission_response` 回队友的收件箱
+5. **队友**的 `useSwarmPermissionPoller`（每 500ms 轮询）收到回复 → 继续或拒绝执行
+
+### 四、队友生命周期
+
+CC 的队友由 `spawnTeammate()`（`spawnMultiAgent.ts`）创建：
+
+1. **Spawn**：创建 tmux 窗格（或进程内），分配颜色，写入 team config
+2. **Work**：`useInboxPoller` 每 1 秒检查收件箱 → 有消息就提交为新的 turn
+3. **Idle**：Stop hook 触发 → 发 `idle_notification` 给 Lead
+4. **Shutdown**：Lead 发 `shutdown_request` → 队友回复 `shutdown_approved` → Lead 清理
+
+### 五、Team Config
+
+团队注册表在 `~/.claude/teams/{teamName}/config.json`（`teamHelpers.ts`）：
+
+```json
+{
+  "name": "my-team",
+  "leadAgentId": "lead@my-team",
+  "members": [{
+    "agentId": "researcher@my-team",
+    "name": "researcher",
+    "agentType": "general-purpose",
+    "color": "blue",
+    "isActive": true
+  }]
+}
+```
+
+队友之间不能嵌套（`AgentTool.tsx:273` 明确禁止 "teammates spawning other teammates"）。
+
 </details>
+
+> 原文：[s16_team_protocols](https://github.com/shareAI-lab/learn-claude-code/blob/67a9126c6435a8654ba7a6f68c0fd2130f00a462/s16_team_protocols/README.md)。以下折叠块保持原文，文中的章号与源码行号沿用该版本。
+
+<details>
+<summary>深入 CC 源码</summary>
+
+CC 的团队协议实现（`teammateMailbox.ts`，1184 行）和教学版在核心结构上一致：request_id + approve/reject 的请求-响应模式。差异在于：
+
+**关机协议**：CC 的 shutdown 是三向通信（`teammateMailbox.ts:720-763`、`SendMessageTool.ts:268-430`）。Lead 发 `shutdown_request`，队友回复 `shutdown_approved`（或 `shutdown_rejected` 附原因），系统发送 `teammate_terminated` 通知所有相关方。关机确认后系统自动清理 pane（tmux/iTerm2）、unassign 任务、从 team config 移除成员（`useInboxPoller.ts:677-800`）。教学版用 `shutdown_response` 统一命名，真实源码拆成 approved/rejected 两种独立消息。
+
+**计划审批**：真实源码里 plan approval request 由 `ExitPlanModeV2Tool.ts:263-312` 在 plan-mode-required 队友退出 plan mode 时产生。`useInboxPoller.ts:599-661` 当前会自动回写 approval，并把请求交给 Lead 作为上下文（regular message）。`SendMessageTool.ts:434-518` 仍保留显式 approve/reject response 能力，审批时可同时设置 `permissionMode`（如"批准但以 plan mode 运行"），响应中可包含 `feedback` 字符串供队友修正后重新提交。不是简单的"Lead 手动 review_plan 工具"流程。
+
+**消息格式**：CC 的协议消息是结构化的 JSON（有 Zod schema 验证），教学版用简单的 type + metadata 字典。字段名也不统一：permission 用 `request_id`（`teammateMailbox.ts:453-462`），shutdown 和 plan approval 用 `requestId`（`teammateMailbox.ts:684-763`）。
+
+**执行门控**：CC 的队友有完整的 permission gating。未获批准的高风险操作会被拦截，不是可选的。教学版只演示了消息流程，没有实现执行拦截。
+
+**通用性**：教学版的一个 FSM（pending → approved | rejected）对应两种协议，这个简化完全正确。CC 的所有协议消息共用同一个 request id 关联机制。
+
+</details>
+
+> 原文：[s17_autonomous_agents](https://github.com/shareAI-lab/learn-claude-code/blob/67a9126c6435a8654ba7a6f68c0fd2130f00a462/s17_autonomous_agents/README.md)。以下折叠块保持原文，文中的章号与源码行号沿用该版本。
+
+<details>
+<summary>深入 CC 源码</summary>
+
+> 教学说明：本章的 idle_poll + auto-claim 机制是教学设计，用统一的轮询函数演示"空闲后找活干"。CC 的实际实现是多个机制的组合，但目标一致——减少 Lead 的手动分配负担。
+
+### 一、CC 的空闲机制：组合路径，不是单一轮询
+
+教学版用一个 `idle_poll()` 统一处理空闲时的 inbox 检查和任务认领。CC 的实际实现是四个机制的组合：
+
+**idle_notification**：队友完成一轮工作后，`sendIdleNotification()`（`inProcessRunner.ts:569-589`）向 Lead 发送空闲通知。Lead 知道队友可用了，可以分配新任务或请求关机。
+
+**mailbox 轮询**：`waitForNextPromptOrShutdown()`（`inProcessRunner.ts:689-868`）是一个 **500ms 轮询循环**，持续检查三类来源：pending user messages、mailbox 文件消息、task list。shutdown_request 被优先处理（`inProcessRunner.ts:768-804`），不会被普通消息饿死。
+
+**task watcher**：`useTaskListWatcher`（`hooks/useTaskListWatcher.ts:34-189`）用 `fs.watch()` 监听 `.claude/tasks/` 目录变化，1 秒 debounce，当新任务创建或依赖解锁时触发检查。依赖判断（`L197-207`）是"blockedBy 中没有未完成的任务"，不是"blockedBy 为空"。
+
+**主动 claim**：轮询循环内部也会调用 `tryClaimNextTask()`（`inProcessRunner.ts:853-860`）——在等待期间主动从 task list 领取任务。所以"队友不主动轮询任务"不准确，CC 同时有被动通知和主动认领。
+
+### 二、任务认领：文件锁 + 原子操作
+
+`claimTask()`（`utils/tasks.ts:541-612`）用 `proper-lockfile` 的任务文件锁，在锁内完成读-检查-改-写。检查项：owner 是否已存在（`L575-576`）、是否已完成（`L580-581`）、blockedBy 中是否有未完成任务（`L585-594`）。`claimTaskWithBusyCheck()`（`utils/tasks.ts:614-692`）用 task-list 级别锁，把 busy check 和 claim 做成原子操作，避免 TOCTOU。
+
+`findAvailableTask()`（`inProcessRunner.ts:595-604`）的依赖判断也是"所有 blockedBy 已完成"，用 `task.blockedBy.every(id => !unresolvedTaskIds.has(id))` 实现。`tryClaimNextTask()`（`inProcessRunner.ts:624-657`）在认领后把状态更新为 `in_progress`，让 UI 立即反映变化。
+
+### 三、教学版 vs CC 对比
+
+| 维度 | 教学版 (s17) | CC |
+|------|-------------|-----|
+| 空闲机制 | idle_poll 统一轮询（5s） | idle_notification + 500ms mailbox 轮询 + task watcher |
+| 任务发现 | scan_unclaimed_tasks（轮询） | useTaskListWatcher（文件监听）+ tryClaimNextTask（主动轮询） |
+| 依赖判断 | can_start（所有 blockedBy 已完成） | findAvailableTask（同样语义） |
+| 并发安全 | owner 检查（无文件锁） | proper-lockfile 任务锁 + task-list 锁 |
+| shutdown 处理 | IDLE 直接分发，WORK 通过 handle_inbox_message | 500ms 轮询中优先处理 shutdown_request |
+| 超时退出 | 60s 无新任务 | 无固定超时，Lead 手动 shutdown |
+| 身份保持 | messages 长度检测 | context compaction 保留 system prompt |
+| claim 失败处理 | 检查返回值，失败不注入 | 文件锁保证原子性 |
+
+教学版的 `idle_poll()` 把 CC 的四个机制合并成一个轮询函数——简化合理，因为核心语义（空闲时找活干、依赖解锁后可认领、shutdown 优先）是一致的。
+
+</details>
+
+> 原文：[s18_worktree_isolation](https://github.com/shareAI-lab/learn-claude-code/blob/67a9126c6435a8654ba7a6f68c0fd2130f00a462/s18_worktree_isolation/README.md)。以下折叠块保持原文，文中的章号与源码行号沿用该版本。
+
+<details>
+<summary>深入 CC 源码</summary>
+
+CC 的 worktree 系统有两条路径：**EnterWorktree**（当前会话切入）和 **AgentTool isolation**（子 agent 隔离）。
+
+### EnterWorktree：当前会话切换
+
+`EnterWorktreeTool.ts:92-97` 创建 worktree 后立即 `process.chdir(worktreePath)`、`setCwd()`、`setOriginalCwd()`、`saveWorktreeState()`。当前会话的工作目录直接切换到 worktree——不是 prompt 提醒，而是进程级目录变更。
+
+`ExitWorktreeTool.ts:261-320` 的 keep/remove 都会 `restoreSessionToOriginalCwd()` 恢复原目录。Remove 时检查未提交改动（`ExitWorktreeTool.ts:190-220`），没有 `discard_changes: true` 就拒绝删除。
+
+### AgentTool isolation：子 agent 隔离
+
+`AgentTool.tsx:590-641` 在 `isolation: "worktree"` 时调用 `createAgentWorktree()` 创建 worktree，用 `cwdOverridePath` 包住子 agent 执行。子 agent 的所有操作自动在 worktree 目录下进行。`AgentTool/prompt.ts:272` 告诉模型：这是临时 worktree，无改动自动清理，有改动返回路径和分支。
+
+`worktree.ts:902-951` 的 `createAgentWorktree()` 不修改全局 session cwd，只给子 agent 用。`worktree.ts:961-1020` 的 `removeAgentWorktree()` 从主 repo root 删除。
+
+### name 校验
+
+`worktree.ts:76-84` 校验 slug：拒绝 `.`/`..`，允许 `[a-zA-Z0-9._-]`。`worktree.ts:48` 定义 `VALID_WORKTREE_SLUG_SEGMENT`。教学版的 `validate_worktree_name` 用同样的规则。
+
+### 路径和分支命名
+
+真实路径是 `.claude/worktrees/`，分支名 `worktree-{slug}`（`worktree.ts:204-227`，斜杠用 `+` 替代）。教学版用 `.worktrees/` 和 `wt/{name}` 简化。
+
+创建时用 `git worktree add -B`（`worktree.ts:326-328`），优先基于 `origin/<defaultBranch>` 而非当前 HEAD。
+
+### 状态管理
+
+CC 没有 task-worktree 绑定。Worktree 状态通过 `PersistedWorktreeSession`（`worktree.ts:756-768`）管理，字段包括 `originalCwd`、`worktreePath`、`worktreeName`、`worktreeBranch`、`originalBranch`、`originalHeadCommit`、`sessionId` 等——没有 taskId。`saveWorktreeState()`（`sessionStorage.ts:2883-2920`）以 `type: 'worktree-state'` 写入 session transcript。
+
+教学版用 task 的 `worktree` 字段做绑定，是教学简化。CC 把 worktree 和 task 作为两个独立系统，通过 Agent 理解上下文来关联。
+
+</details>
+
+<!-- upstream-cc-source:end -->

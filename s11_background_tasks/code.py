@@ -17,7 +17,6 @@ import os
 import re
 import signal
 import subprocess
-import sys
 import threading
 import time
 from pathlib import Path
@@ -32,17 +31,411 @@ try:
 except ImportError:
     pass
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
+# -- Local LangChain message adapter (expanded for single-file reading) --
+from dataclasses import dataclass, field
+from typing import Any
 
-from harness.langchain_messages import LangChainMessagesClient
-from harness.process_compat import (
-    attach_kill_on_close_job,
-    close_process_job,
-    shell_invocation,
-    terminate_process_tree,
+from langchain_core.messages import (
+    AIMessage,
+    BaseMessage,
+    HumanMessage,
+    SystemMessage,
+    ToolMessage,
 )
+from langchain_openai import ChatOpenAI
+
+
+@dataclass(slots=True)
+class TextBlock:
+    """Text content block consumed by the lesson loop."""
+
+    text: str
+    type: str = field(default="text", init=False)
+
+
+@dataclass(slots=True)
+class ToolUseBlock:
+    """Tool-call content block consumed by the lesson loop."""
+
+    id: str
+    name: str
+    input: dict[str, Any]
+    type: str = field(default="tool_use", init=False)
+
+
+@dataclass(slots=True)
+class Usage:
+    """Token usage fields used by workflow and goal accounting."""
+
+    input_tokens: int = 0
+    output_tokens: int = 0
+
+
+@dataclass(slots=True)
+class MessageResponse:
+    """Minimal model response consumed by the lessons."""
+
+    content: list[TextBlock | ToolUseBlock]
+    stop_reason: str
+    usage: Usage
+    raw: AIMessage
+
+
+def _value(value: Any, key: str, default: Any = None) -> Any:
+    if isinstance(value, dict):
+        return value.get(key, default)
+    return getattr(value, key, default)
+
+
+def _block_type(block: Any) -> str | None:
+    return _value(block, "type")
+
+
+def _text_content(content: Any) -> str:
+    """Convert provider blocks, tool results, or plain objects to text."""
+    if isinstance(content, str):
+        return content
+    if content is None:
+        return ""
+    if not isinstance(content, list):
+        return str(content)
+
+    texts: list[str] = []
+    for block in content:
+        if isinstance(block, str):
+            texts.append(block)
+            continue
+        block_text = _value(block, "text")
+        if isinstance(block_text, str):
+            texts.append(block_text)
+            continue
+        nested = _value(block, "content")
+        if nested is not None:
+            texts.append(_text_content(nested))
+    return "\n".join(text for text in texts if text)
+
+
+def _system_text(system: Any) -> str:
+    if isinstance(system, str):
+        return system
+    return _text_content(system)
+
+
+def _assistant_message(content: Any) -> AIMessage:
+    text_parts: list[str] = []
+    tool_calls: list[dict[str, Any]] = []
+    blocks = content if isinstance(content, list) else [content]
+
+    for block in blocks:
+        kind = _block_type(block)
+        if kind == "tool_use":
+            tool_calls.append(
+                {
+                    "id": str(_value(block, "id", "")),
+                    "name": str(_value(block, "name", "")),
+                    "args": dict(_value(block, "input", {}) or {}),
+                    "type": "tool_call",
+                }
+            )
+            continue
+        text = _value(block, "text")
+        if isinstance(text, str) and text:
+            text_parts.append(text)
+
+    return AIMessage(content="\n".join(text_parts), tool_calls=tool_calls)
+
+
+def _user_messages(content: Any) -> list[BaseMessage]:
+    if isinstance(content, str):
+        return [HumanMessage(content=content)]
+    if not isinstance(content, list):
+        return [HumanMessage(content=str(content))]
+
+    results: list[BaseMessage] = []
+    user_text: list[str] = []
+    for block in content:
+        if _block_type(block) == "tool_result":
+            if user_text:
+                results.append(HumanMessage(content="\n".join(user_text)))
+                user_text.clear()
+            results.append(
+                ToolMessage(
+                    content=_text_content(_value(block, "content", "")),
+                    tool_call_id=str(_value(block, "tool_use_id", "")),
+                    status="error" if bool(_value(block, "is_error", False)) else "success",
+                )
+            )
+            continue
+        text = _value(block, "text")
+        if isinstance(text, str):
+            user_text.append(text)
+        elif isinstance(block, str):
+            user_text.append(block)
+
+    if user_text or not results:
+        results.append(HumanMessage(content="\n".join(user_text)))
+    return results
+
+
+def _to_langchain_messages(messages: list[Any]) -> list[BaseMessage]:
+    converted: list[BaseMessage] = []
+    for message in messages:
+        if isinstance(message, BaseMessage):
+            converted.append(message)
+            continue
+        role = _value(message, "role")
+        content = _value(message, "content", "")
+        if role == "assistant":
+            converted.append(_assistant_message(content))
+        elif role == "system":
+            converted.append(SystemMessage(content=_text_content(content)))
+        else:
+            converted.extend(_user_messages(content))
+    return converted
+
+
+def _openai_tools(tools: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    converted: list[dict[str, Any]] = []
+    for item in tools or []:
+        converted.append(
+            {
+                "type": "function",
+                "function": {
+                    "name": item["name"],
+                    "description": item.get("description", ""),
+                    "parameters": item.get("input_schema", {"type": "object"}),
+                },
+            }
+        )
+    return converted
+
+
+def _response_blocks(message: AIMessage) -> list[TextBlock | ToolUseBlock]:
+    blocks: list[TextBlock | ToolUseBlock] = []
+    text = _text_content(message.content)
+    if text:
+        blocks.append(TextBlock(text=text))
+    for call in message.tool_calls:
+        blocks.append(
+            ToolUseBlock(
+                id=str(call.get("id", "")),
+                name=str(call.get("name", "")),
+                input=dict(call.get("args", {}) or {}),
+            )
+        )
+    return blocks
+
+
+def _usage(message: AIMessage) -> Usage:
+    metadata = message.usage_metadata or {}
+    return Usage(
+        input_tokens=int(metadata.get("input_tokens", 0) or 0),
+        output_tokens=int(metadata.get("output_tokens", 0) or 0),
+    )
+
+
+class _MessagesAPI:
+    def __init__(self, owner: "LangChainMessagesClient") -> None:
+        self.owner = owner
+
+    def create(
+        self,
+        *,
+        model: str,
+        messages: list[Any],
+        system: Any = "",
+        tools: list[dict[str, Any]] | None = None,
+        max_tokens: int = 8000,
+        temperature: float = 0,
+        **_: Any,
+    ) -> MessageResponse:
+        llm = ChatOpenAI(
+            model=model,
+            api_key=os.getenv("OPENAI_API_KEY"),
+            base_url=os.getenv("BASE_URL") or self.owner.base_url,
+            max_completion_tokens=max_tokens,
+            temperature=temperature,
+            timeout=self.owner.timeout,
+            max_retries=self.owner.max_retries,
+        )
+        openai_tools = _openai_tools(tools)
+        runnable = llm.bind_tools(openai_tools) if openai_tools else llm
+        request = [SystemMessage(content=_system_text(system))]
+        request.extend(_to_langchain_messages(messages))
+        raw = runnable.invoke(request)
+        if not isinstance(raw, AIMessage):
+            raw = AIMessage(content=str(getattr(raw, "content", raw)))
+
+        finish_reason = str((raw.response_metadata or {}).get("finish_reason", ""))
+        if raw.tool_calls:
+            stop_reason = "tool_use"
+        elif finish_reason in {"length", "max_tokens"}:
+            stop_reason = "max_tokens"
+        else:
+            stop_reason = "end_turn"
+        return MessageResponse(
+            content=_response_blocks(raw),
+            stop_reason=stop_reason,
+            usage=_usage(raw),
+            raw=raw,
+        )
+
+
+class LangChainMessagesClient:
+    """Model boundary; network requests are deferred until ``create``."""
+
+    def __init__(
+        self,
+        *,
+        base_url: str | None = None,
+        timeout: int = 120,
+        max_retries: int = 2,
+        **_: Any,
+    ) -> None:
+        self.base_url = base_url
+        self.timeout = timeout
+        self.max_retries = max_retries
+        self.messages = _MessagesAPI(self)
+
+# -- Agent / Harness mechanisms for this lesson --
+# -- Cross-platform Bash and process-tree cleanup --
+import shutil
+
+
+def _git_bash() -> Path | None:
+    """Prefer the Bash installation bundled with Git for Windows."""
+    if os.name != "nt":
+        return None
+
+    candidates: list[Path] = []
+    git = shutil.which("git")
+    if git:
+        git_root = Path(git).resolve().parent.parent
+        candidates.append(git_root / "bin" / "bash.exe")
+
+    for variable in ("ProgramFiles", "ProgramFiles(x86)"):
+        root = os.environ.get(variable)
+        if root:
+            candidates.append(Path(root) / "Git" / "bin" / "bash.exe")
+
+    return next((path for path in candidates if path.is_file()), None)
+
+
+def shell_invocation(command: str) -> tuple[str | list[str], bool]:
+    """Return the platform-specific ``Popen`` command and ``shell`` flag."""
+    bash = _git_bash()
+    if bash is not None:
+        return [str(bash), "-lc", command], False
+    return command, True
+
+
+if os.name == "nt":
+    import ctypes
+    from ctypes import wintypes
+
+    _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
+    _JOB_OBJECT_EXTENDED_LIMIT_INFORMATION = 9
+
+    class _IoCounters(ctypes.Structure):
+        _fields_ = [
+            ("ReadOperationCount", ctypes.c_ulonglong),
+            ("WriteOperationCount", ctypes.c_ulonglong),
+            ("OtherOperationCount", ctypes.c_ulonglong),
+            ("ReadTransferCount", ctypes.c_ulonglong),
+            ("WriteTransferCount", ctypes.c_ulonglong),
+            ("OtherTransferCount", ctypes.c_ulonglong),
+        ]
+
+    class _BasicLimitInformation(ctypes.Structure):
+        _fields_ = [
+            ("PerProcessUserTimeLimit", ctypes.c_longlong),
+            ("PerJobUserTimeLimit", ctypes.c_longlong),
+            ("LimitFlags", wintypes.DWORD),
+            ("MinimumWorkingSetSize", ctypes.c_size_t),
+            ("MaximumWorkingSetSize", ctypes.c_size_t),
+            ("ActiveProcessLimit", wintypes.DWORD),
+            ("Affinity", ctypes.c_size_t),
+            ("PriorityClass", wintypes.DWORD),
+            ("SchedulingClass", wintypes.DWORD),
+        ]
+
+    class _ExtendedLimitInformation(ctypes.Structure):
+        _fields_ = [
+            ("BasicLimitInformation", _BasicLimitInformation),
+            ("IoInfo", _IoCounters),
+            ("ProcessMemoryLimit", ctypes.c_size_t),
+            ("JobMemoryLimit", ctypes.c_size_t),
+            ("PeakProcessMemoryUsed", ctypes.c_size_t),
+            ("PeakJobMemoryUsed", ctypes.c_size_t),
+        ]
+
+    _kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    _kernel32.CreateJobObjectW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]
+    _kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+    _kernel32.SetInformationJobObject.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_int,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+    ]
+    _kernel32.SetInformationJobObject.restype = wintypes.BOOL
+    _kernel32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+    _kernel32.AssignProcessToJobObject.restype = wintypes.BOOL
+    _kernel32.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
+    _kernel32.TerminateJobObject.restype = wintypes.BOOL
+    _kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    _kernel32.CloseHandle.restype = wintypes.BOOL
+
+
+def attach_kill_on_close_job(process: subprocess.Popen[Any]) -> bool:
+    """Attach a Windows child to a kill-on-close job object."""
+    if os.name != "nt":
+        return False
+
+    job = _kernel32.CreateJobObjectW(None, None)
+    if not job:
+        return False
+
+    information = _ExtendedLimitInformation()
+    information.BasicLimitInformation.LimitFlags = _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+    configured = _kernel32.SetInformationJobObject(
+        job,
+        _JOB_OBJECT_EXTENDED_LIMIT_INFORMATION,
+        ctypes.byref(information),
+        ctypes.sizeof(information),
+    )
+    assigned = configured and _kernel32.AssignProcessToJobObject(
+        job, wintypes.HANDLE(process._handle)
+    )
+    if not assigned:
+        _kernel32.CloseHandle(job)
+        return False
+
+    process._kill_on_close_job = job
+    return True
+
+
+def terminate_process_tree(process: subprocess.Popen[Any]) -> bool:
+    """Terminate the attached Windows job; return whether it was handled."""
+    if os.name != "nt":
+        return False
+    job = getattr(process, "_kill_on_close_job", None)
+    if not job:
+        return False
+    _kernel32.TerminateJobObject(job, 1)
+    return True
+
+
+def close_process_job(process: subprocess.Popen[Any]) -> None:
+    """Close the job handle and clean up remaining descendants."""
+    if os.name != "nt":
+        return
+    job = getattr(process, "_kill_on_close_job", None)
+    if not job:
+        return
+    _kernel32.CloseHandle(job)
+    process._kill_on_close_job = None
+
 from dotenv import load_dotenv
 
 load_dotenv(override=True)
