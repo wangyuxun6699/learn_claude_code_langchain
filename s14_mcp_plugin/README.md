@@ -167,6 +167,44 @@ MCP error: TypeError: <lambda>() missing 1 required argument: 'query'
 
 ---
 
+## 结合本章代码理解 MCP 工具适配
+
+[`code.py`](code.py) 的 `MCPClient` 是一个进程内教学替身，只模拟 MCP 的 `tools/list` 与 `tools/call` 思路，并没有启动真实 stdio/HTTP 会话。它的价值是展示“外部工具如何被发现、改名、授权并动态加入现有 Agent loop”。
+
+### 动态工具池的形成过程
+
+1. 初始模型只能看到内置工具和 `connect_mcp`。
+2. `connect_mcp(name)` 创建 mock server，获取工具定义和 handler。
+3. `assemble_tool_pool()` 在每次模型调用前重新组合内置工具与已连接 server 的工具。
+4. MCP 的 `inputSchema` 转为本项目使用的 `input_schema`。
+5. 工具名规范化为 `mcp__<server>__<tool>`，避免不同 server 的同名工具冲突。
+6. handler 闭包保留原 server 与原始 tool name，调用时再转发给 `client.call_tool()`。
+7. 工具执行仍经过宿主 `PreToolUse` / `PostToolUse`，最终结果仍使用原 tool call ID 返回模型。
+
+规范化后还会检查 64 字符上限和碰撞。两个不同原名可能规范化成同一个字符串，因此仅仅加前缀还不够，必须记录来源并拒绝冲突。
+
+### 权限来自宿主，不来自服务器
+
+`MCP_HOST_POLICY` 由宿主配置 `(server, tool) -> allow/confirm`。server 提供的 `readOnlyHint` 或 `destructiveHint` 可以作为参考，但不应成为唯一授权依据，因为外部 server 不能自行决定宿主权限。未配置的 MCP 工具默认确认，这是安全的 fail-closed 策略。
+
+### 与真实 LangChain MCP 适配器的关系
+
+真实项目可使用 `langchain-mcp-adapters`：`MultiServerMCPClient` 连接多个 stdio 或 streamable HTTP server，`get_tools()` 把远端定义转换为 LangChain tools，再交给 `create_agent()`。默认客户端通常按调用创建会话；需要 server 端会话状态时，应显式管理 `ClientSession`。
+
+| 本章 mock | 真实适配器 |
+|---|---|
+| Python 字典注册工具 | MCP initialize + tools/list |
+| 本地 lambda handler | tools/call RPC |
+| 进程内 server | stdio / HTTP transport |
+| 无认证 | headers、OAuth 或自定义 auth |
+| 只有文本 | 可包含 structured / multimodal content |
+
+无论连接方式如何，Agent loop 的核心不变：模型看到标准工具 schema，宿主执行并生成标准 ToolMessage。MCP 改变的是工具来源和连接生命周期，不是模型工具调用协议。
+
+官方概念：[LangChain MCP](https://docs.langchain.com/oss/python/langchain/mcp) · [Tools](https://docs.langchain.com/oss/python/langchain/tools)
+
+---
+
 ## 试一下
 
 ```sh

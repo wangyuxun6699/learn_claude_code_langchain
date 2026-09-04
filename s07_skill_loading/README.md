@@ -114,6 +114,51 @@ def load(self, name: str) -> str:
 
 ---
 
+## 结合本章代码理解 Skills 与渐进披露
+
+[`code.py`](code.py) 的 `SkillLoader` 把技能分成“目录信息”和“完整内容”两级。启动时扫描 `skills/*/SKILL.md`，只把名称和描述放进 system prompt；模型确认需要某个技能后，再调用 `load_skill(name)` 读取完整文件。
+
+### 扫描阶段
+
+`parse_frontmatter()` 只在首行和后续独立行都是 `---` 时解析 YAML，使用 `yaml.safe_load()`，并对无效或非字典 metadata 降级。`scan()` 还会：
+
+- 将缺失的 `name` 回退为目录名。
+- 将缺失的 `description` 回退为正文首行。
+- 只接受 `SKILLS_DIR` 内真实的 `SKILL.md`，避免路径逃逸。
+- 保留完整原文，确保加载时 frontmatter 和正文都可见。
+
+### 为什么不在启动时加载全部技能
+
+如果有几十个技能，把所有说明塞进 system prompt 会增加 token 成本，也会让模型在无关规则之间摇摆。本章 system prompt 只包含 catalog：
+
+```text
+- skill-name: 一句话描述
+```
+
+完整内容通过 `load_skill` 工具按需进入 ToolMessage。这就是渐进披露：先暴露“有什么”，再加载“怎么做”。
+
+### 与 LangChain Skills 模式的关系
+
+LangChain Skills 指南也把 skill 视为轻量、以 prompt 为主的专业能力，适合不需要独立状态和强隔离的知识包。它和 s06 子 Agent 的区别是：
+
+| Skills | Subagents |
+|---|---|
+| 扩展同一个 Agent 的指令和知识 | 启动独立上下文中的 Agent |
+| 成本低、组合轻 | 隔离强、可使用专属工具和模型 |
+| 加载后仍由主 Agent 执行 | 子 Agent 自己推理和执行 |
+
+在 `create_agent()` 中，可以把 `load_skill` 写成普通 `@tool`；也可以通过 middleware 动态修改 system prompt 或可见工具集合。若技能正文需要跨多轮长期保留，应明确它进入的是 thread state、runtime context 还是外部 Store，避免每次模型调用都重复加载。
+
+### 运行时注意点
+
+- 当前 `SYSTEM = build_system_prompt()` 在模块加载时生成；运行中新增技能需要重新扫描并重建 prompt。
+- skill 内容应视为指令资料，但仍不能绕过宿主权限和工具边界。
+- description 是模型选择技能的主要路由信号，应具体说明触发场景，而不是写成泛泛介绍。
+
+官方概念：[Skills](https://docs.langchain.com/oss/python/langchain/multi-agent/skills) · [Context engineering](https://docs.langchain.com/oss/python/langchain/context-engineering)
+
+---
+
 ## 试一下
 
 ```sh

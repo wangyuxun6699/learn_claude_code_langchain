@@ -196,6 +196,49 @@ complete_task(tests.id)     # ✓ Completed
 
 ---
 
+## 结合本章代码理解任务图与持久状态
+
+[`code.py`](code.py) 的 `TaskStore` 把任务保存为 `.tasks/task_<id>.json`。每条任务包含 `id / subject / description / status / owner / blockedBy`，因此它不再是 s05 的展示清单，而是带依赖、所有权和状态转换的持久工作单元。
+
+### 数据一致性如何保证
+
+- `create()` 用随机 ID 和文件的独占创建模式 `open("x")`，发生碰撞时重试，不覆盖已有任务。
+- `_path()` 校验 ID 格式，并确认解析后的路径仍位于任务目录中。
+- `update_dependencies()` 只允许修改尚未开始且无人认领的任务，先验证所有依赖，再一次性保存。
+- `_depends_on()` 沿 `blockedBy` 做传递搜索，用于拒绝自依赖和环。
+- `claim_task()` 只有在所有依赖完成时才把状态从 `pending` 改成 `in_progress` 并设置 owner。
+- `complete_task()` 校验 owner，完成后重新计算哪些任务刚刚被解锁。
+
+本章先创建所有任务，再使用运行时返回的 ID 建依赖。不能让模型预先编造 ID，因为真实 ID 是宿主分配的持久身份。
+
+### Task DAG 与 LangGraph 不是同一张图
+
+`blockedBy` 形成的是“工作项依赖图”；LangGraph `StateGraph` 描述的是“运行时节点如何执行”。两者可以组合，但职责不同：
+
+| Task system | LangGraph |
+|---|---|
+| 节点是用户/Agent 要完成的任务 | 节点是可执行函数或 Agent |
+| 边表示先决条件 | 边表示控制流或数据流 |
+| 状态是 pending/in_progress/completed | state 是节点间共享的数据 |
+| owner 表示谁负责工作 | runtime 决定哪个节点在哪执行 |
+
+若用 LangGraph 编排固定流程，可以把依赖直接写成图边；若任务由模型动态创建、数量未知并且要被多个 worker 认领，仍需要类似本章的任务存储。LangGraph checkpointer 可以持久化图 state，但不会自动替你定义业务层的任务所有权、循环检测和认领协议。
+
+### 与持久化的关系
+
+本章每个任务一个 JSON 文件，便于教学和手工检查。生产系统通常还需要：原子更新、跨进程锁、版本号、审计日志和数据库事务。s13 会补上文件锁、原子认领和 teammate owner；s16 的 journal 则解决另一类问题——工作流步骤完成后如何在恢复时跳过重复执行。
+
+### 适合断点观察的位置
+
+1. `TaskStore.create()`：查看真实 ID 何时产生。
+2. `update_dependencies()`：查看环检测发生在写入前。
+3. `claim_task()`：查看依赖门控与 owner 写入。
+4. `complete_task()`：查看完成一个节点后解锁集合如何变化。
+
+官方概念：[Use the Graph API](https://docs.langchain.com/oss/python/langgraph/use-graph-api) · [Persistence](https://docs.langchain.com/oss/python/langgraph/persistence) · [Workflows and agents](https://docs.langchain.com/oss/python/langgraph/workflows-agents)
+
+---
+
 ## 试一下
 
 ```sh

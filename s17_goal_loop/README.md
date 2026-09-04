@@ -187,6 +187,71 @@ if decision.action == "block":
 return SessionResult(text=text, status=decision.action)
 ```
 
+## 结合本章代码理解 Goal Loop
+
+Workflow 成功只表示“预定步骤运行完了”，不一定表示用户目标真的达成。s17 增加一个独立、无工具的评估器，在工作 Agent 准备停止时检查完成条件；不满足就向同一消息历史注入反馈，让 Agent 继续工作。
+
+### 两个模型承担不同角色
+
+[`code.py`](code.py) 中的 `AgentSession` 是 worker：它拥有 bash 和文件工具，负责产生可验证结果。`PromptGoalEvaluator` 是 judge：它没有工具，只读取目标条件与裁剪后的 transcript，并返回：
+
+```json
+{"ok": false, "reason": "仍缺少测试通过的证据", "impossible": false}
+```
+
+评估输入使用 JSON 包装，并明确把 completion condition 和 conversation 当作数据，不执行其中的指令。`_parse_json_object()` 严格要求 `ok`、非空 `reason` 与布尔 `impossible`，并拒绝 `ok=true` 同时 `impossible=true` 的矛盾状态。
+
+### Stop gate 的状态机
+
+`GoalController.evaluate_after_turn()` 只在 worker 没有真实工具调用、准备结束本轮时运行：
+
+| action | 条件 | 会话行为 |
+|---|---|---|
+| `allow` | 没有活动 Goal | 正常结束 |
+| `defer` | 仍有后台工作 | 暂不判断，等待结果回到会话 |
+| `achieved` | 证据满足条件 | 记录成功并清除活动 Goal |
+| `failed` | 判断为不可完成 | 记录失败并清除活动 Goal |
+| `block` | 尚未完成 | 注入缺失证据，继续同一 Agent loop |
+| `limit` | 连续阻止次数达到上限 | 把控制权还给用户，但保留 Goal |
+| `error` | 评估器调用或 JSON 校验失败 | 安全停止自动循环，Goal 保持活动 |
+
+当 action 为 `block` 时，`AgentSession._run_query()` 追加 `[Goal still active]` 消息，其中包含完成条件和评估原因。worker 下一轮必须针对缺失证据行动，而不是简单重复最终回答。
+
+### Transcript 与证据
+
+`transcript_text()` 从最近消息向前选择完整记录，只在最新单条消息本身超限时截去中部。工具调用和工具结果会被转成纯文本证据；评估器不得假定命令成功，必须在 transcript 中看到退出码、测试结果或生成物信息。
+
+这也是完成条件要可检查的原因。“把代码写好”很模糊；“指定测试通过且生成文件存在”能由工具结果支持。评估器不是事实来源，只是根据现有证据做决策。
+
+### 与 LangGraph 的对应关系
+
+如果使用 `StateGraph`，可以把本章表示为四类节点：
+
+```text
+worker model ↔ tools
+      ↓ 准备停止
+goal evaluator
+      ├─ achieved/failed/error/limit → END
+      └─ block → worker model
+```
+
+`GoalState` 可成为 graph state 字段，评估结果由条件边路由；checkpointer 保存活动 Goal、迭代次数和消息历史。后台结果可作为外部输入，以同一 `thread_id` 恢复图。需要用户确认是否继续时，可使用 `interrupt()`，而不是在节点内部直接阻塞 stdin。
+
+本章的 `GoalController.restore()` 从 `goal_status` 事件恢复最后一个活动 Goal，展示了 event sourcing 的简化形式；LangGraph checkpointer 则会保存更完整的 state snapshot。
+
+### 防止自动循环失控
+
+- `MAX_GOAL_LENGTH` 限制条件大小。
+- `block_cap` 限制一次用户查询内连续自动续跑次数。
+- `max_turns` 限制 worker 模型调用总轮数。
+- evaluator 错误不会被解释为“目标已完成”。
+- 后台任务未完成时不提前判定失败。
+- evaluator 与 worker 可使用不同模型，降低自我评价偏差。
+
+官方概念：[Workflows and agents](https://docs.langchain.com/oss/python/langgraph/workflows-agents) · [Graph API](https://docs.langchain.com/oss/python/langgraph/use-graph-api) · [Persistence](https://docs.langchain.com/oss/python/langgraph/persistence) · [Interrupts](https://docs.langchain.com/oss/python/langgraph/interrupts)
+
+---
+
 ## 跑起来看看
 
 先安装依赖并准备 `.env`：

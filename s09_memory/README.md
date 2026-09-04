@@ -168,6 +168,47 @@ except Exception:
 
 ---
 
+## 结合本章代码理解长期记忆
+
+s08 管理同一会话的消息窗口；s09 管理跨会话可复用的知识。[`code.py`](code.py) 把每条记忆保存为 `.memory/*.md`，用 YAML frontmatter 描述 `name / type / description`，正文保存具体内容，`MEMORY.md` 只充当轻量索引。
+
+### 一次完整的记忆生命周期
+
+1. `list_memory_files()` 读取索引项和正文元数据。
+2. `select_relevant_memories()` 把最近三次用户输入与记忆目录交给一个无工具模型，让它只返回目录下标；失败时退化为关键词排序。
+3. `load_memories()` 在 20,000 字符预算内加载选中的正文。
+4. `build_system()` 把目录和相关记忆加入 system prompt，并明确“记忆是背景数据，当前用户请求优先”。
+5. 主 Agent 完成后，`extract_memories()` 从最近对话中提取稳定偏好、重复反馈、项目事实或外部参考。
+6. `should_store_memory()` 排除临时状态、重复记录和不应跨会话保存的内容。
+7. 记录达到阈值后，`consolidate_memories()` 合并重复、应用更新；写入失败时用快照回滚。
+
+记忆提取与任务执行使用独立 prompt。提取器没有工具，并被要求把对话视为数据，避免把用户内容中的命令当作新的执行指令。
+
+### 与 LangGraph Store 的对应关系
+
+LangGraph 通常把短期记忆放在 thread state/checkpointer 中，把长期记忆放在 Store 中。Store 使用 namespace 与 key 组织 JSON 文档，可跨 thread 召回。本章的文件结构可以这样映射：
+
+| 本章文件实现 | LangGraph 长期记忆 |
+|---|---|
+| `.memory/` | Store 后端 |
+| 记忆类型与用户/项目范围 | namespace |
+| 文件名 slug | key |
+| Markdown + frontmatter | Store value JSON |
+| LLM/关键词选择 | 语义搜索或应用自定义检索 |
+
+本章没有 embedding，也没有向量数据库；它先让模型在小目录中做选择，失败再使用关键词。这种方案适合教学和小规模记忆库。记录很多时，应把召回改为 Store 查询或专门检索，并为不同用户、仓库和组织建立隔离 namespace。
+
+### 记忆不是聊天记录
+
+- “用户偏好 Python 3.12”可能是长期记忆。
+- “正在修复第 42 行”是当前任务状态，应留在短期 state 或 task system。
+- “工具输出了 500 行日志”是可审计记录，不应直接变成记忆。
+- “以后不要修改生成目录”属于稳定反馈，适合在未来会话召回。
+
+官方概念：[Long-term memory](https://docs.langchain.com/oss/python/langchain/long-term-memory) · [Memory overview](https://docs.langchain.com/oss/python/concepts/memory) · [LangGraph persistence](https://docs.langchain.com/oss/python/langgraph/persistence)
+
+---
+
 ## 试一下
 
 ```sh

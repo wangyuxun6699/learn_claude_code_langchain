@@ -134,6 +134,49 @@ for block in tool_calls:
 
 ---
 
+## 结合 `code.py` 理解 LangChain / LangGraph
+
+本章的重点不是“多写四个 Python 函数”，而是把工具拆成两个必须保持一致的部分：给模型看的 schema，以及宿主真正执行的 handler。
+
+### 工具从声明到执行的完整路径
+
+[`code.py`](code.py) 中的 `TOOLS` 是模型可见的能力目录，`TOOL_HANDLERS` 是运行时分发表：
+
+```text
+TOOLS.input_schema → _openai_tools() → ChatOpenAI.bind_tools()
+→ AIMessage.tool_calls → ToolUseBlock(name, input, id)
+→ TOOL_HANDLERS[name](**input) → tool_result(tool_use_id=id)
+```
+
+名称是两侧的连接键。schema 声明了 `read_file`，分发表就必须存在同名 handler；参数字段也必须能被 `handler(**block.input)` 接收。未知工具不会直接崩溃，而是作为工具结果回给模型，让模型有机会修正。
+
+### 五个工具各自承担的边界
+
+| 工具 | 本章实现中的关键约束 | 价值 |
+|---|---|---|
+| `bash` | 120 秒超时、输出截断、危险片段初步拦截 | 提供通用命令能力 |
+| `read_file` | UTF-8、可选行数上限 | 避免 shell 引号和平台差异 |
+| `write_file` | 自动创建父目录 | 明确覆盖语义和返回值 |
+| `edit_file` | 只替换第一次精确匹配 | 减少对无关内容的破坏 |
+| `glob` | 支持 `**`、限制工作区内、最多展示 200 项 | 控制路径和上下文规模 |
+
+`safe_path()` 使用 `resolve()` 与 `is_relative_to(WORKDIR)` 建立工作区边界。它是宿主安全边界，不是提示词约定；真正的安全约束必须在工具实现或权限层执行。
+
+### 与 LangChain 工具系统的关系
+
+本章直接写 JSON Schema，是为了展示 provider 无关的底层协议。LangChain 更常见的写法是用 `@tool` 或 `StructuredTool` 从 Python 类型标注生成 schema，再交给 `bind_tools()`。如果使用预构建 Agent，`ToolNode` 会负责读取 `AIMessage.tool_calls`、调用工具并生成带正确调用 ID 的 `ToolMessage`。
+
+- `bind_tools()`：把工具定义告诉模型，不执行工具。
+- `TOOL_HANDLERS` 或 `ToolNode`：执行模型提出的调用。
+- Agent loop：决定执行完后是否再次调用模型。
+- LangGraph：在需要持久化、分支、并行或人工中断时管理这些节点。
+
+虽然模型一次响应可以给出多个调用，本章的 `for block in tool_calls` 仍是串行调度。只有明确使用异步任务、支持并行的工具节点或图分支，才获得真正的并行执行。
+
+官方概念：[Tools](https://docs.langchain.com/oss/python/langchain/tools) · [Models 中的工具调用](https://docs.langchain.com/oss/python/langchain/models)
+
+---
+
 ## 试一下
 
 ```sh

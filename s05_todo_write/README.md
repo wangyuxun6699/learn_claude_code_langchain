@@ -120,6 +120,46 @@ Agent 收到任务后的典型流程：先调 `todo_write` 列出所有步骤（
 
 ---
 
+## 结合本章代码理解 Agent State 与 Todo Middleware
+
+[`code.py`](code.py) 的 `TodoManager` 是一个显式的会话内状态容器。它不把计划写进自然语言历史后就不管，而是把每一项约束为结构化记录：`content` 表示任务，`status` 只能是 `pending / in_progress / completed`，`activeForm` 表示当前进行时描述。
+
+### 一次 `todo_write` 如何更新状态
+
+1. `run_todo_write()` 接收列表；为兼容部分模型，也接受 JSON 字符串或 Python list 字面量。
+2. 字符串只通过 `json.loads()` 和 `ast.literal_eval()` 解析，不使用危险的 `eval()`。
+3. `TodoManager.update()` 先完整校验候选列表，再一次性替换旧状态；失败不会留下半更新数据。
+4. 状态约束要求最多一个 `in_progress`，防止模型同时声称正在做多个串行步骤。
+5. `render()` 把结构化状态转成模型和用户容易阅读的进度视图。
+6. Agent 连续三批工具结果未更新 Todo 时，运行时追加一次提醒，而不是每轮重复污染上下文。
+
+这里的关键是“先验证、后提交”。Todo 是控制状态，不应因为模型少传一个字段就把原计划破坏掉。
+
+### 与 LangChain `TodoListMiddleware` 的关系
+
+LangChain 的内置 Todo middleware 会为 Agent 增加写入 Todo 的工具，并把 Todo 保存到 Agent state。本章手写 `TodoManager`，因此可以直接看到状态校验、提醒注入和渲染行为；代价是它只存在于当前 Python 进程，退出后不会自动恢复。
+
+仓库中的 [`code_streaming.py`](code_streaming.py) 展示了更框架化的版本：
+
+- `create_agent()` 创建运行在 LangGraph 上的 Agent。
+- `TodoListMiddleware` 管理结构化 Todo state。
+- `before_agent`、`wrap_tool_call`、`after_agent` 承接 s04 的 hooks。
+- `agent.stream(..., stream_mode="values")` 在每个图步骤后给出当前 state，因此可以逐步显示工具调用、Todo 变化和最终回复。
+
+### Todo、Task 和 Graph state 不相同
+
+| 概念 | 生命周期 | 用途 |
+|---|---|---|
+| 本章 Todo | 当前进程 / 当前会话 | 给模型一张短期执行清单 |
+| s10 Task | 文件持久化、带依赖和 owner | 协调可认领的工作单元 |
+| LangGraph state | 一个 thread 的图执行状态 | 在节点间传值，可由 checkpointer 持久化 |
+
+如果把本章迁移到 LangGraph，Todo 最自然地成为 state 的一个字段，并由 reducer 或 middleware 定义更新规则；需要跨进程恢复时，再给编译后的图配置 checkpointer。
+
+官方概念：[Built-in middleware](https://docs.langchain.com/oss/python/langchain/middleware/built-in) · [LangGraph persistence](https://docs.langchain.com/oss/python/langgraph/persistence)
+
+---
+
 ## 试一下
 
 ```sh

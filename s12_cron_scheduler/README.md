@@ -125,6 +125,49 @@ for job in fired:
 
 ---
 
+## 结合本章代码理解调度器与 Agent Runtime
+
+Cron 不是模型循环内部的一次工具调用，而是能够在未来主动创建新输入的运行时服务。[`code.py`](code.py) 因此分成三层：Cron 存储与匹配、到期队列、Agent turn 交付。
+
+### 从时间到消息的路径
+
+```text
+cron_scheduler_loop 每秒轮询
+→ poll_due_jobs(datetime.now())
+→ _enqueue_due_job() 先持久化 pending_delivery
+→ cron_queue
+→ queue_processor_loop 等待 Agent 空闲
+→ agent_loop 注入 [Scheduled] prompt
+→ 第一次模型调用成功后 acknowledge
+```
+
+`pending_delivery` 是可靠性关键。作业到期时先把“等待交付”写进 `.scheduled_tasks.json`，再进入内存队列；模型调用失败时，`restore_cron_jobs()` 把未确认作业放回队列。只有模型成功接受消息后才 `acknowledge_cron_jobs()`：周期任务清除 pending 标志，一次性任务从存储删除。
+
+这是一种简化的 at-least-once 投递协议。`last_fired` 防止同一分钟重复触发，`agent_lock` 保证交互式输入和调度输入不会同时驱动同一份 history。
+
+### Cron 表达式与业务边界
+
+本章支持五字段表达式中的 `*`、步长、列表、范围和单值，并实现了 day-of-month 与 day-of-week 同时受限时的 OR 语义。它不是完整 Cron 库，因此生产项目应使用成熟解析器，并显式处理时区、夏令时、错过触发、并发策略和作业过期。
+
+### 与 LangGraph 的关系
+
+LangGraph 管理一次有状态执行怎样暂停、恢复和持久化，但“几点启动一次执行”通常属于外部 scheduler 或部署平台。一个常见组合是：
+
+1. 调度器在指定时间产生 prompt。
+2. 用稳定或新建的 `thread_id` 调用 Agent/Graph。
+3. checkpointer 保存会话 state。
+4. 幂等键或作业 ID 防止重复副作用。
+
+本章的 `.scheduled_tasks.json` 相当于调度层存储，`session_history` 相当于简化的 thread state，`pending_delivery` 相当于未确认输入。不要把定时任务仅保存在 system prompt 中；模型不会在没有运行时唤醒的情况下自己到点执行。
+
+### 自动任务为什么不能弹权限输入
+
+队列处理发生在后台线程，如果危险命令直接调用 `input()`，程序会在无人值守状态卡住。本章的 `request_permission()` 检查 `threading.current_thread()`：只要不是主线程，就直接返回“scheduled turns cannot request interactive approval”。这意味着自动触发只能执行无需交互审批的操作；生产系统则应把审批请求转交给可持久恢复的 HITL 流程。
+
+官方概念：[LangGraph persistence](https://docs.langchain.com/oss/python/langgraph/persistence) · [Interrupts](https://docs.langchain.com/oss/python/langgraph/interrupts) · [Runtime context](https://docs.langchain.com/oss/python/langchain/runtime)
+
+---
+
 ## 试一下
 
 ```sh

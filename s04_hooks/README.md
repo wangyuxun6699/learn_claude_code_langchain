@@ -195,6 +195,43 @@ for block in tool_calls:
 
 ---
 
+## 结合本章代码理解 Middleware
+
+本章把 s03 的权限分支抽成一个最小生命周期系统。[`code.py`](code.py) 中的 `HOOKS` 保存四类 callback，`register_hook()` 负责注册，`trigger_hooks()` 按顺序执行，并在 callback 返回非 `None` 时短路。
+
+### 四个事件分别位于哪里
+
+| 事件 | 触发位置 | 本章用途 | 可改变什么 |
+|---|---|---|---|
+| `UserPromptSubmit` | 用户消息进入 history 前 | 输出当前工作目录 | 输入预处理或上下文注入 |
+| `PreToolUse` | handler 执行前 | 权限检查、日志 | 阻止工具执行 |
+| `PostToolUse` | handler 返回后 | 大输出告警 | 观察或改写工具结果 |
+| `Stop` | 模型不再调用工具时 | 统计工具调用数 | 返回内容时可要求循环继续 |
+
+`execute_tool()` 是关键边界：先触发 `PreToolUse`，再查找 handler，捕获工具异常，最后触发 `PostToolUse`。Agent loop 不再知道权限和日志细节，因此以后可以添加机制而不继续膨胀主循环。
+
+### 与 LangChain middleware 的一一对应
+
+LangChain 的 `create_agent()` 运行在 LangGraph 之上，middleware hook 会成为已编译 Agent 图的一部分：
+
+- `UserPromptSubmit` 接近 `before_agent`，也可用动态 prompt middleware 修改模型上下文。
+- `PreToolUse` / `PostToolUse` 接近 `wrap_tool_call`，可在 handler 前后检查、重试、记录或替换结果。
+- 模型调用前后还可用 `before_model`、`after_model` 或 `wrap_model_call`；本章尚未拆出这些事件。
+- `Stop` 接近 `after_agent`，但本章允许它返回一条消息让循环续跑，因此也承担终止守卫的作用。
+
+与框架 middleware 相比，本章注册表没有 typed state、runtime context、流式 writer 和图级跳转能力；优点是执行顺序完全透明。到 s15 时，权限、上下文、恢复、后台通知等机制仍沿用“主循环稳定，机制挂在边界上”的原则。
+
+### 编写 hook 的约束
+
+- hook 可能被多次执行，日志和持久化操作应尽量幂等。
+- `PreToolUse` 返回的拒绝原因会成为工具结果，应让模型能据此修正行动。
+- `PostToolUse` 不应吞掉原始异常信息，否则模型无法补救。
+- 多个 hook 的顺序有语义；新增 hook 时要明确它是否应在拒绝动作上运行。
+
+官方概念：[Middleware overview](https://docs.langchain.com/oss/python/langchain/middleware/overview) · [Built-in middleware](https://docs.langchain.com/oss/python/langchain/middleware/built-in) · [Runtime context](https://docs.langchain.com/oss/python/langchain/runtime)
+
+---
+
 ## 试一下
 
 ```sh

@@ -208,6 +208,90 @@ MCP 负责外部能力：
 
 ---
 
+## 结合整份 `code.py` 理解 Agent Harness
+
+[`code.py`](code.py) 不是重新发明另一条循环，而是把前 14 章的机制装配到同一个宿主。文件虽然很长，真正的主循环仍集中在 `agent_loop()`；复杂度来自循环前后的状态准备、动态工具池、外部事件和失败恢复。
+
+### 从一次用户输入走完整条路径
+
+```text
+用户输入
+→ UserPromptSubmit hooks
+→ update_context / memory recall / system prompt 组装
+→ prepare_context（工具结果预算、归档、压缩）
+→ inject_background_notifications / consume team events / cron delivery
+→ assemble_tool_pool（内置工具 + MCP + Workflow 扩展）
+→ call_llm（重试、fallback、token 上限）
+→ tool_use 分发
+→ PreToolUse → handler → PostToolUse
+→ tool_result 回到 messages
+→ 无工具调用时 Stop hooks、记忆提取、状态收尾
+```
+
+这条路径说明 harness 的职责不只是“调用模型”：它决定模型看到什么、能调用什么、工具在哪里运行、哪些动作需要批准、事件怎样重新进入上下文，以及失败后从哪里继续。
+
+### 组件在代码中的落点
+
+| 机制 | 主要代码 | 关键状态或边界 |
+|---|---|---|
+| 模型适配 | `LangChainMessagesClient`、`call_llm()` | `ChatOpenAI`、tool schema、usage、重试/fallback |
+| 工具系统 | `BUILTIN_TOOLS`、`BUILTIN_HANDLERS`、`assemble_tool_pool()` | schema 与 handler 同名、动态 MCP 工具 |
+| 权限与 hooks | `HOOKS`、`permission_hook()`、`trigger_hooks()` | 所有执行路径共享宿主策略 |
+| Todo / Task | `run_todo_write()`、Task store | 临时计划与持久任务分离 |
+| Skills | `scan_skills()`、`load_skill()` | catalog 先行，正文按需加载 |
+| Memory | `load_memory_runtime()`、`remember_after_turn()` | 复用 s09 的召回、提取和整理 |
+| 上下文压缩 | `prepare_context()`、`micro_compact()`、`compact_history()` | 保留未消费结果和完整工具调用对 |
+| 子 Agent / 团队 | `spawn_subagent()`、teammate runtime、MessageBus | 独立 messages、任务 owner、协议 request_id |
+| 后台任务 | `start_background_task()`、`collect_background_results()` | shell 进程生命周期、单消费者通知 |
+| Cron | `cron_scheduler_loop()`、ack/restore | 持久化 pending delivery |
+| Worktree | `create_worktree()`、`assignment_cwd()` | Task 决定 teammate 的 cwd lease |
+| MCP | `connect_mcp()`、名称规范化、host policy | 外部 schema 进入动态工具池 |
+
+### 本项目实际用了哪些 LangChain 能力
+
+本章实际直接使用的是 `ChatOpenAI` 与 LangChain 标准消息类型：
+
+- `SystemMessage / HumanMessage / AIMessage / ToolMessage` 统一消息协议。
+- `bind_tools()` 把每轮动态生成的工具池交给模型。
+- `AIMessage.tool_calls` 进入本项目的显式调度循环。
+- `usage_metadata` 驱动 token 统计、预算和恢复逻辑。
+
+本章没有调用 `create_agent()` 或 `StateGraph`。这不是说 LangGraph 不适用，而是课程选择显式实现所有机制，以便看清边界。
+
+### 如果用 LangChain / LangGraph 重构
+
+可以把当前宿主映射为以下结构：
+
+| 手写 harness | 框架化选择 |
+|---|---|
+| `agent_loop()` | `create_agent()` 生成的标准模型/工具循环 |
+| hooks 注册表 | 自定义与内置 middleware |
+| 权限输入 | `HumanInTheLoopMiddleware` + `interrupt()` |
+| history 列表 | `AgentState.messages` + checkpointer |
+| `.memory` | LangGraph Store |
+| 压缩函数 | `SummarizationMiddleware` / 自定义 model middleware |
+| 子 Agent 工具 | subagent `create_agent()` 或 subgraph |
+| 团队事件路由 | `StateGraph` 节点、`Command` 和外部队列 |
+| transcript/journal | checkpoint、Store 与审计存储 |
+| runtime 参数 | typed runtime context |
+
+`create_agent()` 适合标准“模型调用工具直到结束”的内核；当周围出现分类、并行 fan-out、审批、团队 handoff 或确定性 workflow 时，再把 Agent 作为节点嵌入更大的 `StateGraph`。LangGraph 负责持久执行和状态转换，业务层仍要负责权限策略、Task owner、worktree 和 MCP 信任边界。
+
+### 集成时最容易出现的错误
+
+- 某条旁路直接调用 handler，绕过 permission 或 post hooks。
+- 后台、cron、团队消息各自修改 history，导致重复消费或并发写入。
+- 压缩时拆散 tool call 与 tool result，下一次模型调用被 provider 拒绝。
+- fallback 重试重复执行已有副作用；模型调用可重试，工具副作用必须幂等或有 journal。
+- 动态 MCP 工具规范化后撞名，覆盖内置 handler。
+- teammate 的 cwd lease 失效后仍写入旧 worktree。
+
+阅读本章时，建议先从 `agent_loop()` 逆向追踪每个函数，不要从文件第一行顺序读到末尾。先掌握主路径，再分别进入工具、团队、后台、Cron、压缩和恢复模块。
+
+官方概念：[Frameworks, runtimes, and harnesses](https://docs.langchain.com/oss/python/concepts/products) · [Middleware](https://docs.langchain.com/oss/python/langchain/middleware/overview) · [Context engineering](https://docs.langchain.com/oss/python/langchain/context-engineering) · [LangGraph overview](https://docs.langchain.com/oss/python/langgraph/overview)
+
+---
+
 ## 试一下
 
 ```sh

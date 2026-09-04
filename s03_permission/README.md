@@ -137,6 +137,44 @@ for block in tool_calls:
 
 ---
 
+## 结合本章代码理解人工审批
+
+[`code.py`](code.py) 把权限拆成三道闸门，而不是把“是否安全”交给模型自己判断：
+
+1. `check_deny_list()` 处理无条件禁止的命令，命中后不能通过用户确认绕过。
+2. `check_rules()` 根据工具名和参数判断风险，例如工作区外路径或破坏性 shell 命令。
+3. `ask_user()` 只对需要确认的动作询问用户，默认答案是拒绝。
+
+`check_permission(block)` 位于 handler 调用之前。拒绝时仍然生成与原调用 ID 对应的 `tool_result`。权限拒绝也是一次合法的工具结果，而不是偷偷删除模型的调用，否则消息历史会出现“有 tool call、没有 ToolMessage”的协议断裂。
+
+### 确定性规则和模型判断要分开
+
+本章规则是确定性的：相同工具参数应得到相同的初步分类。路径越界、命令词边界和固定 deny list 适合用代码规则处理；只有难以形式化的语义风险才值得增加模型分类器。规则判断便宜、可测试，也不会受到提示注入影响。
+
+### 与 LangChain HITL / LangGraph interrupt 的对应关系
+
+| 本章实现 | LangChain / LangGraph 对应能力 | 差异 |
+|---|---|---|
+| `check_rules()` | `HumanInTheLoopMiddleware` 的策略匹配 | 本章规则直接写在 Python 中 |
+| `input("Allow?")` | LangGraph `interrupt()` | 本章阻塞进程，不保存图状态 |
+| `allow / deny` | HITL 的 `approve / reject` | 官方中间件还可编辑工具参数 |
+| 继续当前循环 | `Command(resume=...)` 恢复图 | 本章不能跨进程恢复 |
+
+生产级 HITL 通常需要 checkpointer 和稳定的 `thread_id`：图在中断点保存 state，稍后通过 `Command(resume=...)` 恢复。当前 `code.py` 适合教学和本地 CLI，因为批准动作必须在同一进程中完成。
+
+仓库还提供 [`code_middleware.py`](code_middleware.py)，用 `create_agent()`、`@tool` 和 `AgentMiddleware` 表达相同思路。建议先理解 `code.py` 的执行顺序，再对照 middleware 版本如何把权限逻辑挂到标准 Agent 生命周期。
+
+### 本章应验证的边界
+
+- deny list 应按命令边界匹配，避免普通文本误判。
+- 路径必须先 `resolve()` 再判断是否位于工作区。
+- 自动触发任务不能偷偷读取交互式 stdin；后续 cron 和后台章节会继续强化这一点。
+- hook 的“允许”不能绕过宿主硬拒绝策略。
+
+官方概念：[Human-in-the-loop](https://docs.langchain.com/oss/python/langchain/human-in-the-loop) · [LangGraph interrupts](https://docs.langchain.com/oss/python/langgraph/interrupts) · [Guardrails](https://docs.langchain.com/oss/python/langchain/guardrails)
+
+---
+
 ## 试一下
 
 ```sh

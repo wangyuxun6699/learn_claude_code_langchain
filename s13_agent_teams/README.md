@@ -413,6 +413,53 @@ Lead：我已收到认证任务的结果，接下来继续协调其余工作。
 
 ---
 
+## 结合本章代码理解多 Agent 协作
+
+本章不是把几个 prompt 顺序调用，而是实现了一个持续运行的团队运行时。[`code.py`](code.py) 同时管理 Task DAG、teammate 线程、文件邮箱、协议请求、计划审批、任务所有权和 Git worktree。
+
+### Lead 与 teammate 的状态边界
+
+- Lead 使用主 `agent_loop()`，拥有创建任务、生成队友、审批计划、请求关闭和创建 worktree 的工具。
+- 每个 `TeammateRuntime` 有独立 `messages`、system prompt 和工具集合，在自己的线程里运行 `WORK / IDLE` 状态机。
+- teammate 必须先拥有一个 Task 才能使用工作区工具；工具工作目录来自任务绑定的 worktree。
+- 完成任务后先发 `result`，再释放 assignment 并发 `idle_notification`。结果和空闲是两个不同事件。
+- IDLE 时先消费邮箱，再尝试原子认领 ready task，避免消息和新任务互相覆盖。
+
+### MessageBus 为什么不直接塞进共享消息列表
+
+`MessageBus` 把每个收件箱保存为 `.mailboxes/<agent>.jsonl`，读操作是破坏性消费，并由 `Condition` 唤醒等待线程。这样通信先存在于运行时控制面，只有收件人读取后才进入它自己的模型上下文，不会让所有 Agent 共享一份不断膨胀的历史。
+
+控制消息使用 `type + request_id + sender + target` 匹配。计划审批还绑定 `work_version` 与 `task_id`，因此旧任务的批准不能误放行新任务。`plan_gates` 在批准前阻止 teammate 使用 bash、写入和编辑工具。
+
+### 与 LangChain 多 Agent 模式的关系
+
+LangChain 的 supervisor/subagents 模式通常由中心 Agent 把子 Agent 当作工具调用；handoff 模式则转移对话控制权。LangGraph 可以把每个 Agent 做成节点或 subgraph，通过 `Command` 更新 state 并路由到下一个节点。
+
+| 本章运行时 | LangChain / LangGraph 表达 |
+|---|---|
+| Lead 决定委派 | supervisor agent |
+| teammate 独立 messages | per-agent subgraph state |
+| mailbox event | state update、外部队列或消息总线 |
+| plan gate | interrupt + approval node |
+| ready task 原子认领 | 外部 transactional task store |
+| worktree cwd lease | runtime context / 工具依赖注入 |
+| teammate 常驻线程 | 长运行 worker，而非一次性 subagent call |
+
+纯 `StateGraph` 能表达路由和状态，但不会自动提供跨进程原子任务认领、Git worktree 生命周期或邮箱投递语义；这些仍属于宿主运行时。反过来，本章手写线程没有 LangGraph checkpointer 的逐步快照和 time travel，因此重启恢复主要依赖 Task 文件和 assignment 重建。
+
+### 代码阅读顺序
+
+1. `Task`、`claim_task()`、`complete_task()`：先理解工作的唯一所有者。
+2. `MessageBus` 与 `ProtocolState`：理解数据消息和控制消息。
+3. `TeammateRuntime.work()` / `wait_for_work()`：理解 WORK/IDLE 转换。
+4. `_run_teammate_tool()`：理解计划门和权限门。
+5. `create_worktree()` / `assignment_cwd()`：理解任务如何决定工具 cwd。
+6. `agent_loop()`：最后看 Lead 如何消费团队事件并继续决策。
+
+官方概念：[Subagents](https://docs.langchain.com/oss/python/langchain/multi-agent/subagents) · [Workflows and agents](https://docs.langchain.com/oss/python/langgraph/workflows-agents) · [Interrupts](https://docs.langchain.com/oss/python/langgraph/interrupts)
+
+---
+
 ## 试一下
 
 ```sh

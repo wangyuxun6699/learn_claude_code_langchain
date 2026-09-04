@@ -149,6 +149,43 @@ npm install 在后台运行时，Agent Loop 继续执行了 read_file。
 
 ---
 
+## 结合本章代码理解异步工作与外部事件
+
+本章只允许 `bash` 通过显式 `run_in_background: true` 进入后台。这个限制来自 [`code.py`](code.py) 的 `should_run_background()`：文件读写等短操作仍同步执行，避免所有工具一律异步后失去顺序和错误边界。
+
+### 后台任务的生命周期
+
+1. `execute_tool()` 仍先经过 `PreToolUse`，权限通过后才允许启动后台任务。
+2. `BackgroundManager.start()` 分配任务 ID，在线程中调用同一个 shell handler。
+3. shell 子进程使用独立进程组；退出、SIGTERM 或异常时，宿主会终止整个进程树，避免遗留子进程。
+4. 初次工具结果只告诉模型“后台任务已启动”，不会伪造完成结果。
+5. `collect_background_results()` 只收集一次终态结果。
+6. 下一次模型调用前，`inject_background_results()` 把完成通知追加到 user 内容，使外部事件重新进入 Agent 上下文。
+
+这个设计把“启动确认”和“最终结果”分成两条消息。模型可以先继续其他工作，之后再根据真实结果决策。
+
+### 与 LangChain 异步调用的区别
+
+`ainvoke()`、`abatch()` 或异步 `ToolNode` 解决的是 Python 调用不阻塞事件循环；本章解决的是一个命令可能比当前 Agent turn 活得更久。两者不是同一件事：
+
+- 同一轮中的多个安全工具可以异步并发，然后在 barrier 处汇总。
+- 长时间后台任务需要独立身份、生命周期、取消、结果队列和再次唤醒 Agent 的机制。
+- 如果结果要跨进程可靠投递，需要持久队列或图运行时，而不是只保存在内存线程中。
+
+在 LangGraph 中，可把后台启动视为一个节点，把结果视为稍后到达的外部事件；使用 checkpointer 保存 thread state，再以同一个 `thread_id` 恢复执行。若只是在一个图 superstep 内并行几个函数，则直接使用并行分支即可，不必引入本章的后台管理器。
+
+### 并发下必须保持的约束
+
+- 权限检查发生在启动之前，不能在线程里绕过。
+- 结果必须只有一个消费者，避免同一通知重复进入消息历史。
+- ID 分配、任务表和完成队列需要加锁。
+- 进程退出时要清理仍在运行的 shell 进程树。
+- 后台异常也必须形成终态结果，不能永远显示 running。
+
+官方概念：[LangChain runtime](https://docs.langchain.com/oss/python/langchain/runtime) · [LangGraph persistence](https://docs.langchain.com/oss/python/langgraph/persistence) · [Workflows and agents](https://docs.langchain.com/oss/python/langgraph/workflows-agents)
+
+---
+
 ## 试一下
 
 ```sh

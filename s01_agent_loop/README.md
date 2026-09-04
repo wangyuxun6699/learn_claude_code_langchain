@@ -115,6 +115,47 @@ def agent_loop(messages):
 
 ---
 
+## 结合 `code.py` 理解 LangChain / LangGraph
+
+本章没有调用 `create_agent()`，也没有创建 `StateGraph`。这是刻意的：先把框架通常替你完成的工作摊开，才能看清 Agent 的最小闭环。
+
+### 模型边界实际做了什么
+
+从 [`code.py`](code.py) 的 `_MessagesAPI.create()` 开始读，调用链是：
+
+1. `ChatOpenAI(...)` 从 `MODEL_ID`、`OPENAI_API_KEY` 和 `BASE_URL` 创建 OpenAI-compatible 聊天模型。
+2. `_openai_tools()` 把课程使用的 `name / description / input_schema` 转成 OpenAI function schema。
+3. `llm.bind_tools(openai_tools)` 把 `bash` 的 schema 绑定给模型。绑定只表示“允许模型请求这个工具”，不会自动执行命令。
+4. `_to_langchain_messages()` 把课程消息转换为 `SystemMessage`、`HumanMessage`、`AIMessage` 和 `ToolMessage`。
+5. `runnable.invoke(request)` 发起一次模型调用；返回的 `AIMessage.tool_calls` 再被转换成课程循环读取的 `ToolUseBlock`。
+6. `usage_metadata` 被整理为 `Usage`，供后续章节做预算、恢复和 Goal 统计。
+
+这里最重要的协议约束是 `tool_call_id`：模型产生的调用 ID 会进入 `ToolUseBlock.id`，执行结果必须用同一个 ID 构造 `ToolMessage`。如果 ID 丢失，模型就无法判断结果属于哪次调用。
+
+### 手写循环与 LangChain Agent 的对应关系
+
+| 本章代码 | LangChain / LangGraph 中的抽象 |
+|---|---|
+| `messages` 列表 | Agent state 中的 `messages` 通道 |
+| `client.messages.create()` | 模型节点（model node） |
+| 查找 `tool_use` | 根据 `AIMessage.tool_calls` 进行条件路由 |
+| `run_bash()` | 工具执行节点 |
+| 追加 `tool_result` 后继续 | 从工具节点回到模型节点 |
+| 没有工具调用时 `return` | 路由到 `END` |
+
+`create_agent()` 会提供同一种“模型 → 工具 → 模型”的循环，并运行在 LangGraph 之上。本章保留显式 `while True`，因此消息何时追加、工具何时执行、何时退出都能在一个函数里观察到。若改写成 `StateGraph`，通常会建立 `model` 与 `tools` 两个节点，再用条件边判断继续还是结束；语义没有变化，只是状态、流式输出和持久化交给图运行时管理。
+
+### 阅读和调试建议
+
+- 在 `_MessagesAPI.create()` 后观察 `raw.tool_calls`，确认提供商返回了标准工具调用。
+- 在 `agent_loop()` 中观察 `messages[-2:]`，理解 `AIMessage` 与 `ToolMessage` 必须成对出现。
+- 尝试让模型一次请求两个命令。本章会按列表顺序串行执行，说明“模型可生成并行工具调用”不等于“宿主已经并行调度”。
+- 不要把 `stop_reason` 当作唯一依据；本项目最终以是否真实存在 `tool_use` 内容块决定是否继续。
+
+官方概念：[Models 与 `bind_tools`](https://docs.langchain.com/oss/python/langchain/models) · [Tools](https://docs.langchain.com/oss/python/langchain/tools) · [LangGraph 概览](https://docs.langchain.com/oss/python/langgraph/overview)
+
+---
+
 ## 试一下
 
 > **安全提示**：代码会执行模型生成的 shell 命令。建议在一个临时测试目录中运行，避免影响你的项目文件。s03 会加入权限控制。

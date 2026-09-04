@@ -86,6 +86,49 @@ TOOL_HANDLERS = {**BASE_HANDLERS, "task": run_subagent}
 
 ---
 
+## 结合本章代码理解 Subagent
+
+本章采用最典型的 supervisor 模式：父 Agent 把子任务包装成一个名为 `task` 的工具。模型调用它时，`run_subagent(prompt)` 启动另一条独立 Agent loop，最后只把文本总结返回父上下文。
+
+### 上下文隔离在代码中如何发生
+
+[`code.py`](code.py) 的关键不是另一个 `while`，而是这行：
+
+```python
+messages = [{"role": "user", "content": prompt}]
+```
+
+子 Agent 不复制父 Agent 的完整历史，只收到父 Agent 为它整理的 prompt；它有独立的 `SUB_SYSTEM`，只能使用 `SUB_TOOLS`，其中没有 `task` 工具，因此不能递归创建更多子 Agent。循环最多执行 30 轮，最终文本通过普通工具结果回到父 Agent。
+
+这种隔离同时解决两个问题：
+
+- 父上下文不会塞入子任务的每条命令和文件输出。
+- 子 Agent 不会被父对话里的无关讨论干扰，但父 Agent 必须提供足够完整的任务说明。
+
+文件和 shell 工具仍经过 s04 的 `PreToolUse` / `PostToolUse` 边界，所以“上下文隔离”不等于“权限绕过”。
+
+### 与 LangChain subagents 的对应关系
+
+LangChain 官方的 subagent 模式同样把子 Agent 暴露为主 Agent 的工具：主 Agent 负责选择子 Agent、构造输入并整合结果。常见实现是对子 Agent 调用 `create_agent(...).invoke()`，再把最后一条消息作为工具返回值。
+
+| 本章实现 | 框架化实现 |
+|---|---|
+| `run_subagent()` 内手写循环 | 子 `create_agent()` 或 LangGraph subgraph |
+| `TASK_TOOL` | `@tool` 包装的子 Agent 调用 |
+| fresh `messages` | per-invocation subgraph / 无共享 thread state |
+| 最终文本返回父循环 | ToolMessage 返回 supervisor |
+| 30 轮硬上限 | model/tool call limit middleware 或 recursion limit |
+
+如果多个子 Agent 需要并行执行，可以让模型一次产生多个工具调用，并由宿主异步调度；如果子 Agent 需要暂停等待用户，则应使用带 checkpointer 的 subgraph 和 `interrupt()`，而不是在子线程里直接读 stdin。
+
+### 设计子 Agent 工具描述
+
+父模型只根据工具名、描述和参数决定何时委派，因此工具描述就是路由策略。应说明子 Agent 擅长什么、需要什么输入、返回什么结果；prompt 还应包含目标、范围、可用文件和完成标准。上下文隔离的收益来自“有选择地传递”，不是简单地把信息全部删掉。
+
+官方概念：[Subagents](https://docs.langchain.com/oss/python/langchain/multi-agent/subagents) · [Context engineering](https://docs.langchain.com/oss/python/langchain/context-engineering)
+
+---
+
 ## 试一下
 
 ```sh

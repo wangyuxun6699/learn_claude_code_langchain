@@ -226,6 +226,61 @@ async def sample_workflow(ctx, args):
 
 s16 不替换主循环，它只是在工具层暴露 `Workflow`，背后启动一个本地 workflow 运行时：一份保存好的脚本通过 agent-runner 边界协调 N 次调用。s06 的子 agent 是模型临场派一次；s16 把编排写成可续跑的宿主代码。
 
+## 结合本章代码理解 Workflow 与 LangGraph
+
+s15 的 Agent 动态决定下一步；s16 的 Workflow 把允许的路径写在代码中。[`code.py`](code.py) 自己实现了一个小型函数式工作流运行时，并通过 `install_workflow_tool(host)` 把唯一的 `Workflow` 工具加入 s15，而不是让模型提交任意 Python 代码。
+
+### Workflow 启动前的边界
+
+- `validate_meta()` 校验名称、描述和阶段列表。
+- `check_permission()` 在运行脚本前应用宿主策略。
+- `reserve_run_id()` 使用独占文件创建分配全新 run identity，避免覆盖已有快照。
+- `workflow_run_lock()` 同时使用进程内锁和文件锁，拒绝同一 run 的并发恢复。
+- `WORKFLOWS` 是宿主注册表；模型只能选择已注册 workflow 与参数，不能注入脚本。
+
+### 四个编排原语
+
+`ExecutionState` 暴露的原语决定了 workflow 能做什么：
+
+| 原语 | 语义 | 适用场景 |
+|---|---|---|
+| `agent(prompt, schema, label)` | 调用一个聚焦的 LLM worker，可要求结构化结果 | 需要判断、提取或审查的步骤 |
+| `parallel(thunks)` | 同时启动多个 thunk，全部完成后形成 barrier | 多个互不依赖的检查 |
+| `pipeline(items, *stages)` | 每个 item 顺序过多个 stage，不同 item 可交错 | 批量处理流水线 |
+| `workflow(name, args)` | 内联调用一个已注册子 workflow，共享预算和 journal | 复用确定性编排 |
+
+`ExecutionLimits` 用 `asyncio.Semaphore(8)` 控制实际并发，并用 run-wide 计数限制最多 1000 次 agent 调用。`Budget` 按真实 usage 累加 token，超限在下一步开始前失败。
+
+### Journal 为什么能恢复
+
+`WorkflowJournal` 为每次 `agent()` 计算与并发顺序无关的语义 key：kind、label、prompt 与 schema 的稳定组合。步骤成功后立即追加到 `<runId>.journal.jsonl`。恢复时，相同 key 直接返回缓存结果，不再次调用模型。
+
+这要求被 journal 包围的步骤具有稳定输入；如果 prompt 或 schema 改变，key 也会改变，步骤会重新执行。结构化缓存还会再次通过 `SimpleJsonSchema` 校验，损坏的 journal 不会被静默接受。
+
+### 与 LangGraph 的对应关系
+
+LangGraph 把 workflow 定义为预定代码路径，把 Agent 定义为由模型动态决定过程。Graph API 可用节点和边表达阶段；Functional API 可用 `@entrypoint` 与 `@task` 保留普通控制流写法。配置 checkpointer 后，成功步骤会形成 checkpoint，失败后可从持久状态恢复。
+
+| 本章运行时 | LangGraph 能力 |
+|---|---|
+| `ExecutionState.agent()` | task/node 中的模型调用 |
+| `parallel()` | 并行分支 / 同一 superstep |
+| `pipeline()` | 节点链、Send/fan-out 或 Functional API tasks |
+| `WorkflowJournal` | checkpointer 与 durable execution |
+| `workflow_run_lock()` | 部署运行时的并发控制 |
+| `LocalWorkflowTask.progress` | stream events / custom stream writer |
+| `resume_from_run_id` | 使用 thread/checkpoint 身份恢复 |
+
+差异在于本章按“语义调用 key”缓存单个 agent 结果，而 LangGraph 主要按图步骤 checkpoint state。副作用步骤无论使用哪种框架都必须满足幂等性：恢复可能重新进入某个节点，不能重复发送邮件、部署或覆盖外部数据。
+
+### 结构化输出
+
+`LangChainAgentRunner` 当前在 prompt 中附加 JSON Schema，再解析模型文本并用 `SimpleJsonSchema` 校验，失败时重试一次。生产版可优先使用模型的 structured output 能力或 LangChain 的结构化响应接口，但仍应在宿主边界做最终验证；“模型声称符合 schema”不等于数据已经可信。
+
+官方概念：[Workflows and agents](https://docs.langchain.com/oss/python/langgraph/workflows-agents) · [Functional API](https://docs.langchain.com/oss/python/langgraph/use-functional-api) · [Persistence](https://docs.langchain.com/oss/python/langgraph/persistence)
+
+---
+
 ## 试一下
 
 ```bash

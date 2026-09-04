@@ -294,6 +294,55 @@ if compact_requested:
 > **与 s09 的边界：** s08 管理当前会话的有限上下文，压缩时允许舍弃可恢复的细节；s09 保存需要跨压缩、跨会话继续存在的信息。
 
 
+## 结合本章代码理解短期记忆管理
+
+本章处理的是“当前会话里模型能看到多少”，也就是短期上下文，不是 s09 的跨会话长期记忆。[`code.py`](code.py) 的 `ContextCompactor.prepare()` 每次模型调用前按固定顺序运行：
+
+```text
+tool_result_budget
+→ snip_compact
+→ 超限时 micro_compact
+→ fit_tool_results
+→ 仍超限时 compact_history
+```
+
+### 为什么必须先处理工具结果
+
+工具输出通常是上下文里增长最快的部分。`tool_result_budget()` 会先把单批大结果落盘并留下预览；`micro_compact()` 只替换模型已经消费过的旧结果，保留最近三项以及尚未被模型读取的新结果。这样可以避免“刚执行完工具，结果还没给模型看就被压缩掉”。
+
+`snip_compact()` 在消息太多时归档中段，但会调整切点，避免把 assistant 的 `tool_use` 与紧随其后的 user `tool_result` 拆开。工具调用对完整性是本章最重要的不变量。
+
+### 摘要不是删除原始记录
+
+`compact_history()` 会先把完整 JSONL transcript 写入 `.transcripts/`，然后让一个无工具模型把历史压成事实状态，保留当前目标、决策、文件、约束和剩余工作。活动消息中只留下摘要与 transcript 路径；原始记录仍可审计。
+
+当 API 已经返回 prompt too long 时，`reactive_compact()` 会保留最近完整消息尾部，只总结较旧部分，并且最多重试一次。`compact` 工具则允许模型主动请求同一套完整压缩。
+
+### 与 LangChain / LangGraph 的对应关系
+
+LangChain 的 `SummarizationMiddleware`、消息裁剪工具和短期记忆接口可以完成类似工作；LangGraph 则把 messages 作为 thread state，并通过 checkpointer 保存每一步状态。
+
+| 本章 | 框架能力 |
+|---|---|
+| 字符数近似上下文大小 | 模型 token 计数或 `trim_messages` |
+| 原地改写 `messages` | state update / message reducer |
+| `.transcripts` 完整归档 | checkpoint 历史或外部对象存储 |
+| 自定义摘要消息 | summarization middleware |
+| reactive retry | model-call middleware + state update |
+
+要特别区分 checkpoint 与压缩：checkpoint 解决“状态能否恢复”，压缩解决“下一次模型调用看到什么”。即使所有历史都持久化，也不能把无限增长的消息全部发送给模型。
+
+### 安全与质量边界
+
+- 摘要 prompt 明确把历史视为数据，防止旧消息中的指令劫持总结器。
+- 大输出路径只有在位于 `TOOL_RESULTS_DIR` 且文件存在时才被信任。
+- 摘要必须保留当前用户请求；否则压缩后 Agent 可能完成错误目标。
+- 估算字符数适合教学，生产环境应使用模型匹配的 token 计数。
+
+官方概念：[Short-term memory](https://docs.langchain.com/oss/python/langchain/short-term-memory) · [Persistence](https://docs.langchain.com/oss/python/langgraph/persistence) · [Context engineering](https://docs.langchain.com/oss/python/langchain/context-engineering)
+
+---
+
 ## 试一下
 
 ```bash
