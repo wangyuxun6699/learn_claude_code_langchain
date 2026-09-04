@@ -1,8 +1,5 @@
 # s12: Cron Scheduler — 按时间启动任务
 
-> **对齐状态**：本章 `code.py` 对齐上游 `s12_cron_scheduler` 的结构；模型适配与本章机制在 `code.py` 中直接实现，使用 LangChain OpenAI-compatible 调用。
-[English](README.md) · [中文](README.zh.md) · [日本語](README.ja.md)
-
 s01 → ... → s10 → s11 → `s12` → [s13](../s13_agent_teams/) → ... → s17
 
 ---

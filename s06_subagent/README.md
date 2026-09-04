@@ -1,8 +1,5 @@
 # s06: Subagent — 给子任务一段独立上下文
 
-> **对齐状态**：本章 `code.py` 对齐上游 `s06_subagent` 的结构；模型适配与本章机制在 `code.py` 中直接实现，使用 LangChain OpenAI-compatible 调用。
-[English](README.md) · [中文](README.zh.md) · [日本語](README.ja.md)
-
 s01 → s02 → s03 → s04 → s05 → `s06` → [s07](../s07_skill_loading/) → s08 → ... → s16 → s17
 
 > Subagent 从全新的 `messages[]` 开始。最终文本返回父循环，中间对话不会进入父上下文。

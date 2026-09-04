@@ -1,8 +1,5 @@
 # s01: Agent Loop — 一个循环就够了
 
-> **对齐状态**：本章 `code.py` 对齐上游 `s01_agent_loop` 的结构；模型适配与本章机制在 `code.py` 中直接实现，使用 LangChain OpenAI-compatible 调用。
-[English](README.md) · [中文](README.zh.md) · [日本語](README.ja.md)
-
 `s01` → [s02](../s02_tool_use/) → s03 → s04 → ... → s16 → s17
 > *"One loop & Bash is all you need"* — 一个工具 + 一个循环 = 一个 Agent。
 >

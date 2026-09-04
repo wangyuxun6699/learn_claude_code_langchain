@@ -1,8 +1,5 @@
 # s09: Memory — 让重要信息跨会话保留下来
 
-> **对齐状态**：本章 `code.py` 对齐上游 `s09_memory` 的结构；模型适配与本章机制在 `code.py` 中直接实现，使用 LangChain OpenAI-compatible 调用。
-[English](README.md) · [中文](README.zh.md) · [日本語](README.ja.md)
-
 s01 → ... → s07 → s08 → `s09` → [s10](../s10_task_system/) → s11 → ... → s16 → s17
 > *"把以后还会用到的信息留下来。"* 文件存储 + 索引 + 相关性选择 + 按需召回。
 >

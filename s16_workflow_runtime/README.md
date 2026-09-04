@@ -1,8 +1,5 @@
 # s16: Workflow Runtime — 模型决定单步，脚本决定编排
 
-> **对齐状态**：本章 `code.py` 对齐上游 `s16_workflow_runtime` 的结构；Workflow 在本章实现，模型调用通过 s15 宿主执行，使用 LangChain OpenAI-compatible 调用。
-[English](README.md) · [中文](README.zh.md) · [日本語](README.ja.md)
-
 s01 → ... → s14 → [s15](../s15_integrated_harness/) → `s16` → [s17](../s17_goal_loop/)
 
 > *"一次 tool_use，跑完一整套编排"* — `Workflow` 工具启动一个可恢复的脚本运行时，协调多次 agent 调用。

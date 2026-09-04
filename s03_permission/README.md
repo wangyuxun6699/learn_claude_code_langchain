@@ -1,8 +1,5 @@
 # s03: Permission — 执行前做权限判断
 
-> **对齐状态**：本章 `code.py` 对齐上游 `s03_permission` 的结构；模型适配与本章机制在 `code.py` 中直接实现，使用 LangChain OpenAI-compatible 调用。
-[English](README.md) · [中文](README.zh.md) · [日本語](README.ja.md)
-
 s01 → s02 → `s03` → [s04](../s04_hooks/) → s05 → ... → s16 → s17
 > *"工具执行前先做权限判断"* — 权限管线决定哪些操作需要审批。
 >

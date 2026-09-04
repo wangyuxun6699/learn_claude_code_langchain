@@ -1,8 +1,5 @@
 # s05: TodoWrite — 没有计划的 Agent，做着做着就偏了
 
-> **对齐状态**：本章 `code.py` 对齐上游 `s05_todo_write` 的结构；模型适配与本章机制在 `code.py` 中直接实现，使用 LangChain OpenAI-compatible 调用。
-[English](README.md) · [中文](README.zh.md) · [日本語](README.ja.md)
-
 s01 → s02 → s03 → s04 → `s05` → [s06](../s06_subagent/) → s07 → ... → s16 → s17
 
 > *"没有计划的 agent 走哪算哪"* — 先列步骤再动手，长任务更不容易漏项。

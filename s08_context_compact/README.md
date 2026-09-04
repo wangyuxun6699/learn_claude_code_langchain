@@ -1,8 +1,5 @@
 # s08: Context Compact：上下文总会满，先整理，再总结
 
-> **对齐状态**：本章 `code.py` 对齐上游 `s08_context_compact` 的结构；模型适配与本章机制在 `code.py` 中直接实现，使用 LangChain OpenAI-compatible 调用。
-[English](README.md) · [中文](README.zh.md) · [日本語](README.ja.md)
-
 s01 → s02 → s03 → s04 → s05 → s06 → s07 → `s08` → [s09](../s09_memory/) → s10 → ... → s16 → s17
 
 > *"上下文总会满，要有办法腾地方。"* 四步压缩，低成本的操作优先执行。
