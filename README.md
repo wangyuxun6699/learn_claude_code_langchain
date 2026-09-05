@@ -248,14 +248,14 @@ Claude Code = 一个 agent loop
 
 ## 上游对齐与章节继承关系
 
-课程的阅读顺序是 s01 → s17。下表的“代码基线”表示教学机制的演进关系，**不是 Python 的类继承或跨章 import**。s01 用 `create_agent` 建立最小智能体，s02 保持这个实现并扩展工具；s03 起为了展示权限、Hook 等底层控制点，在各章单文件中展开消息适配和调用循环。s17 也独立实现。与上游 main 一致，s15 通过文件加载复用 s09 的 Memory，s16 通过文件加载复用 s15 宿主，s15 不反向依赖 s16。
+课程的阅读顺序是 s01 → s17。下表的“代码基线”表示教学机制的演进关系，**不是 Python 的类继承或跨章 import**。s01 用 `create_agent` 建立最小智能体，s02 保持这个实现并扩展工具，s03、s04 继续在 LangChain middleware 与外层流式循环上展示权限和 Hook；s05 起为展开后续底层机制，在各章单文件中内置消息适配和调用循环。s17 也独立实现。与上游 main 一致，s15 通过文件加载复用 s09 的 Memory，s16 通过文件加载复用 s15 宿主，s15 不反向依赖 s16。
 
 | 章节 | 代码基线 | 本章加入或组合的机制 |
 |---|---|---|
 | s01 | 最小内核 | `create_agent` + Bash + stream |
 | s02 | s01 | 四个新 `@tool` + `TOOLS` 注册，Agent Loop 不变 |
-| s03 | s02 的五工具能力 | 展开底层循环并加入三段式权限检查 |
-| s04 | s03 | 把权限与扩展逻辑移入 Hook |
+| s03 | s02 的五工具能力 | `PermissionMiddleware` 加入三段式权限检查 |
+| s04 | s03 | 通用 `HookMiddleware` + 四类生命周期 Hook |
 | s05 | s04 | TodoWrite |
 | s06 | s04 基础内核 | 一次性、隔离上下文的 Subagent |
 | s07 | s04 基础内核 | Skill 目录与按需加载 |
@@ -270,7 +270,7 @@ Claude Code = 一个 agent loop
 | s16 | s15 宿主 | 追加 `Workflow` 工具、journal、resume 与结构化校验 |
 | s17 | s04 基础内核 | 独立 Goal evaluator 控制真正停止，与 s16 形成“如何做/是否完成”的概念衔接 |
 
-`code.py` 是带注释主实现；`code_uncommented.py` 由 [`scripts/build_uncommented.py`](scripts/build_uncommented.py) 从同一源码生成。模型适配和平台兼容代码直接展开，阅读章节无需跳转到公共 `harness` 包。文件工具、路径检查和环境读取继续在各章按其教学范围实现。
+`code.py` 是带注释主实现；`code_uncommented.py` 由 [`scripts/build_uncommented.py`](scripts/build_uncommented.py) 从同一源码生成。需要显式控制底层循环的章节会在单文件中直接展开模型适配和平台兼容代码，阅读时无需跳转到公共 `harness` 包。文件工具、路径检查和环境读取继续在各章按其教学范围实现。
 
 ### “深入 CC 源码”原文来源
 
@@ -428,7 +428,7 @@ BASE_URL=https://your-openai-compatible-endpoint/v1
 ```bash
 pip install -r requirements-dev.txt  # pytest + ruff
 pytest -q                            # 17 章机制、集成边界与 harness 完整回归
-ruff check harness tests             # 只 lint 公共内核与测试
+ruff check tests scripts             # lint 测试与维护脚本
 ```
 
 CI（[.github/workflows/ci.yml](.github/workflows/ci.yml)）在 Python 3.11 / 3.13 执行同样两步：用 `py_compile` 机器验证“逐章无语法错误”，章节运行时仍需真实 API key 手动验证。

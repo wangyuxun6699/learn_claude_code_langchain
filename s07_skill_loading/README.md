@@ -1,192 +1,78 @@
-# s07: Skill Loading — 用到时再加载
+# s07: Skill Loading — 按需加载专业知识
 
-s01 → s02 → s03 → s04 → s05 → s06 → `s07` → [s08](../s08_context_compact/) → s09 → ... → s16 → s17
-
-> system prompt 保存技能目录；`load_skill` 返回完整的 `SKILL.md`。
+> LangChain 教学改编版。章节结构与“深入 CC 源码”部分主要参考 [shareAI-lab/learn-claude-code](https://github.com/shareAI-lab/learn-claude-code)。
 >
-> **Harness 层**：知识加载 — 让模型先知道有哪些技能，再按名称读取内容。
+> **Harness 层**：渐进式披露 — 目录常驻、正文按需载入。
+
+[s06](../s06_subagent/) → **s07** → [s08](../s08_context_compact/)
 
 ---
 
 ## 问题
 
-假设某个项目有一套 React 组件规范、一份 SQL 风格指南和一份 API 设计文档。我们希望 Agent 在开发过程中遵守这些规范，最直接的做法就是把它们全部放进 system prompt：
-
-```python
-SYSTEM = (
-    f"You are a coding agent. "
-    + open("docs/react-style.md").read()
-    + open("docs/sql-style.md").read()
-    + open("docs/api-design.md").read()
-)
-```
-
-这种做法能让 Agent 读到所有规范，但问题在于，三份文档被固定放进了 system prompt，无法根据当前任务只选择需要的那一份。每次调用 LLM 时，三份文档的全文都会一起发送给模型。当前任务只修改 React 组件时，实际需要的只有 React 组件规范；SQL 风格指南和 API 设计文档与任务无关，却仍然占用输入 token 和上下文窗口，留给代码、对话和工具结果的空间也会变少。
+把所有专业说明一次性塞进 system prompt 会浪费上下文，也会让无关规则互相干扰。
 
 ---
 
 ## 解决方案
 
-![Skill Overview](images/skill-overview.svg)
+![s07: Skill Loading — 按需加载专业知识](images/skill-overview.svg)
 
-启动时，`SkillLoader` 扫描 `skills/*/SKILL.md`，读取 YAML frontmatter 中的 `name` 和 `description`，并把这份目录加入 system prompt。模型需要完整说明时，调用 `load_skill(name)`；返回的 `SKILL.md` 作为 `tool_result` 追加到消息列表。
-
-| 内容 | 进入模型的位置 | 何时加入 |
-|------|----------------|----------|
-| 技能名称和描述 | system prompt | 启动时 |
-| 完整 `SKILL.md` | `tool_result` | 调用 `load_skill` 时 |
+启动时只扫描 `skills/*/SKILL.md` 的名称和描述；模型判断相关后，调用 `load_skill` 读取完整正文，随后注入system prompt。
 
 ---
 
-## 工作原理
-
-每个技能是一个包含 `SKILL.md` 的目录：
-
-```text
-skills/
-  agent-builder/SKILL.md
-  code-review/SKILL.md
-  mcp-builder/SKILL.md
-  pdf/SKILL.md
-```
-
-### 扫描技能
+## 工作原理：LangChain 版本
 
 ```python
-class SkillLoader:
-    def scan(self):
-        self.skills.clear()
-        skills_root = self.skills_dir.resolve()
-        for manifest in sorted(self.skills_dir.glob("*/SKILL.md")):
-            if (not manifest.is_file()
-                    or not manifest.resolve().is_relative_to(skills_root)):
-                continue
-            content = manifest.read_text(encoding="utf-8")
-            metadata, body = self.parse_frontmatter(content)
-            raw_name = metadata.get("name")
-            name = raw_name.strip() if isinstance(raw_name, str) else ""
-            name = name or manifest.parent.name
-            raw_description = metadata.get("description")
-            description = (raw_description.strip()
-                           if isinstance(raw_description, str) else "")
-            description = description or body.split("\n", 1)[0]
-            description = " ".join(str(description).lstrip("# ").split())
-            self.skills[name] = {
-                "name": name,
-                "description": description,
-                "content": content,
-            }
+SKILL_REGISTRY: dict[str, dict[str, str]] = {}
+
+def scan_skills() -> None:
+    for manifest in sorted(SKILL_DIR.glob("*/SKILL.md")):
+        raw = manifest.read_text(encoding="utf-8")
+        metadata, body = parse_frontmatter(raw)
+        name = str(metadata.get("name") or manifest.parent.name)
+        SKILL_REGISTRY[name] = {
+            "description": str(metadata.get("description") or name),
+            "content": raw,
+        }
+
+@tool
+def load_skill(name: str) -> str:
+    """Load one skill's complete instructions by exact name."""
+    return SKILL_REGISTRY[name]["content"]
 ```
 
-`catalog()` 只输出名称和描述：
-
-```text
-- code-review: Perform thorough code reviews...
-- pdf: Process PDF files...
-```
-
-### 组装 system prompt
-
-```python
-def build_system_prompt() -> str:
-    return (
-        f"You are a coding agent at {WORKDIR}. Use tools to solve tasks. "
-        "Act, don't explain.\n\n"
-        f"Skills available:\n{SKILL_LOADER.catalog()}\n\n"
-        "Use load_skill to read the full instructions when a skill applies."
-    )
-```
-
-固定的 Agent 指令和扫描得到的技能目录在这里组成实际传给模型的 system prompt。
-
-### 加载完整内容
-
-```python
-def load(self, name: str) -> str:
-    skill = self.skills.get(name)
-    if skill:
-        return skill["content"]
-    available = ", ".join(self.skills) or "none"
-    return f"Error: Unknown skill '{name}'. Available: {available}"
-```
-
-`name` 用于查询启动时建立的注册表，不会被当作文件路径。工具返回后，原有 Agent Loop 会把内容作为新的 `tool_result` 消息追加。
+system prompt 中只注入 `name: description` 目录；完整 `SKILL.md` 只有在工具调用后才进入消息历史。
 
 ---
 
-## 结合本章代码理解 Skills 与渐进披露
+## 本章文件
 
-[`code.py`](code.py) 的 `SkillLoader` 把技能分成“目录信息”和“完整内容”两级。启动时扫描 `skills/*/SKILL.md`，只把名称和描述放进 system prompt；模型确认需要某个技能后，再调用 `load_skill(name)` 读取完整文件。
-
-### 扫描阶段
-
-`parse_frontmatter()` 只在首行和后续独立行都是 `---` 时解析 YAML，使用 `yaml.safe_load()`，并对无效或非字典 metadata 降级。`scan()` 还会：
-
-- 将缺失的 `name` 回退为目录名。
-- 将缺失的 `description` 回退为正文首行。
-- 只接受 `SKILLS_DIR` 内真实的 `SKILL.md`，避免路径逃逸。
-- 保留完整原文，确保加载时 frontmatter 和正文都可见。
-
-### 为什么不在启动时加载全部技能
-
-如果有几十个技能，把所有说明塞进 system prompt 会增加 token 成本，也会让模型在无关规则之间摇摆。本章 system prompt 只包含 catalog：
-
-```text
-- skill-name: 一句话描述
-```
-
-完整内容通过 `load_skill` 工具按需进入 ToolMessage。这就是渐进披露：先暴露“有什么”，再加载“怎么做”。
-
-### 与 LangChain Skills 模式的关系
-
-LangChain Skills 指南也把 skill 视为轻量、以 prompt 为主的专业能力，适合不需要独立状态和强隔离的知识包。它和 s06 子 Agent 的区别是：
-
-| Skills | Subagents |
-|---|---|
-| 扩展同一个 Agent 的指令和知识 | 启动独立上下文中的 Agent |
-| 成本低、组合轻 | 隔离强、可使用专属工具和模型 |
-| 加载后仍由主 Agent 执行 | 子 Agent 自己推理和执行 |
-
-在 `create_agent()` 中，可以把 `load_skill` 写成普通 `@tool`；也可以通过 middleware 动态修改 system prompt 或可见工具集合。若技能正文需要跨多轮长期保留，应明确它进入的是 thread state、runtime context 还是外部 Store，避免每次模型调用都重复加载。
-
-### 运行时注意点
-
-- 当前 `SYSTEM = build_system_prompt()` 在模块加载时生成；运行中新增技能需要重新扫描并重建 prompt。
-- skill 内容应视为指令资料，但仍不能绕过宿主权限和工具边界。
-- description 是模型选择技能的主要路由信号，应具体说明触发场景，而不是写成泛泛介绍。
-
-官方概念：[Skills](https://docs.langchain.com/oss/python/langchain/multi-agent/skills) · [Context engineering](https://docs.langchain.com/oss/python/langchain/context-engineering)
+- `code.py`：带注释教学版（可直接运行）；仓库根目录的 `skills/` 是可直接扫描的示例。
+- `code_uncommented.py`：无教学注释的精简版。
 
 ---
 
 ## 试一下
 
-```sh
-cd learn-claude-code
-python s07_skill_loading/code.py
+先在仓库根目录准备环境，然后从根目录按模块运行：
+
+```powershell
+python -m venv venv
+.\venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+Copy-Item .env.example .env
+python -m s07_skill_loading.code
 ```
 
-试试这些 prompt：
-
-1. `What skills are available?`
-2. `Load the code-review skill and follow its instructions`
-3. `Review README.md and load the relevant skill first`
-
-观察 system prompt 中是否只有技能目录，以及调用 `load_skill` 后是否出现完整的 `SKILL.md` 内容。
+> 这些教学 Agent 可以执行命令和修改文件。建议先在测试目录中试用，并认真阅读每次权限提示。
 
 ---
 
 ## 接下来
 
-随着工具调用增加，`messages[]` 会积累较早的文件内容和工具结果。
-
-s08 Context Compact → 缩短较早的消息，为后续调用保留上下文空间。
----
-
-<!-- upstream-cc-source:start -->
-## 深入 CC 源码
-
-> 原文：[s07_skill_loading](https://github.com/shareAI-lab/learn-claude-code/blob/67a9126c6435a8654ba7a6f68c0fd2130f00a462/s07_skill_loading/README.md)。以下折叠块保持原文，文中的章号与源码行号沿用该版本。
+s08 处理不断增长的消息、工具结果与上下文窗口。
 
 <details>
 <summary>深入 CC 源码</summary>
@@ -228,4 +114,3 @@ CC 的 SKILL.md YAML frontmatter 由 `parseSkillFrontmatterFields()` 解析（`l
 
 </details>
 
-<!-- upstream-cc-source:end -->

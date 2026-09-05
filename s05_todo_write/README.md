@@ -1,193 +1,90 @@
-# s05: TodoWrite — 没有计划的 Agent，做着做着就偏了
+# s05: TodoWrite — 让 Agent 知道自己做到哪了
 
-s01 → s02 → s03 → s04 → `s05` → [s06](../s06_subagent/) → s07 → ... → s16 → s17
-
-> *"没有计划的 agent 走哪算哪"* — 先列步骤再动手，长任务更不容易漏项。
+> LangChain 教学改编版。章节结构与“深入 CC 源码”部分主要参考 [shareAI-lab/learn-claude-code](https://github.com/shareAI-lab/learn-claude-code)。
 >
-> **Harness 层**: 规划 — 让 Agent 在动手之前先想清楚。
+> **Harness 层**：任务内计划 — 可见、可更新的 Todo 状态。
+
+[s04](../s04_hooks/) → **s05** → [s06](../s06_subagent/)
 
 ---
 
 ## 问题
 
-给 Agent 一个复杂任务："把所有 Python 文件改成 snake_case 命名，然后跑测试，修好失败。"
-
-Agent 开始干活，改了 3 个文件，跑了个测试，发现 2 个失败，开始修。修着修着，它忘了最初是"改成 snake_case"，测试失败把注意力全吸走了。
-
-对话越长越严重：工具结果不断填满上下文，系统提示的影响力被稀释。一个 10 步重构，做完 1-3 步就开始即兴发挥，因为 4-10 步已经被挤出注意力了。
+长任务只有消息历史时，模型容易忘记已经完成什么、下一步是什么，也不便于用户观察进度。
 
 ---
 
 ## 解决方案
 
-![Todo Overview](images/todo-overview.svg)
+![s05: TodoWrite — 让 Agent 知道自己做到哪了](images/todo-overview.svg)
 
-S05 保留 S04 的工具分发、权限检查和 Hooks，再加入 `todo_write` 与 reminder 计数器。`todo_write` 只更新计划状态，实际工作仍由原有工具完成。
 
-新工具仍通过 `TOOL_HANDLERS[block.name]` 分发。连续三个工具调用轮次没有使用 `todo_write` 时，Harness 会把 reminder 追加到第三轮的工具结果中。
+LangChain 的 `TodoListMiddleware` 会注入 `write_todos` 工具并在 Agent state 中维护 todos；本章再把该状态打印到命令行。同时对智能体进行强约束，要求它在动手之前必须先写todo列表,也就是强硬要求智能体进入plan模式，同时如果超过3轮没有查看计划，就给模型提示词做出引导。
 
 ---
 
-## 工作原理
+## 工作原理：LangChain 版本
 
-**TodoManager** 持有内存中的任务列表，负责校验更新，并把渲染结果返回给模型。`run_todo_write` 同时把这份状态打印到终端：
-
+注入todo
 ```python
-class TodoManager:
-    def __init__(self):
-        self.items = []
-
-    def update(self, todos: list | str) -> str:
-        # Parse and validate before replacing the current list.
-        validated = []
-        ...
-        self.items = validated
-        return self.render()
-
-    def render(self) -> str:
-        # [ ] pending, [>] in progress, [x] completed
-        ...
-
-
-TODO = TodoManager()
-
-def run_todo_write(todos: list | str) -> str:
-    output = TODO.update(todos)
-    print(output)
-    return output
-```
-
-一次更新最多包含 20 项；每项都必须有非空的 `content`；同一时间只能有一个 `in_progress`。字符串输入可以是 JSON，也可以是 Python 列表表示，解析过程不使用 `eval`。
-
-工具定义和其他 5 个工具一起加入 dispatch map：
-
-```python
-TOOLS = [
-    {"name": "bash",       ...},
-    {"name": "read_file",  ...},
-    {"name": "write_file", ...},
-    {"name": "edit_file",  ...},
-    {"name": "glob",       ...},
-    # s05: 新增一条
-    {"name": "todo_write", "description": "Create and manage a task list ...",
-     "input_schema": {
-         "type": "object",
-         "properties": {
-             "todos": {
-                 "type": "array",
-                 "items": {
-                     "type": "object",
-                     "properties": {
-                         "content": {"type": "string"},
-                         "status": {"type": "string", "enum": ["pending", "in_progress", "completed"]},
-                     },
-                 },
-             },
-         },
-     },
-    },
+MIDDLEWARE = [
+    user_prompt_submit,
+    TodoListMiddleware(
+        system_prompt="""
+        Use write_todos for every non-trivial request.
+        Keep one relevant item in_progress and update statuses as work progresses.
+        """
+    ),
+    tool_hook,
+    stop_hook,
 ]
 
-TOOL_HANDLERS["todo_write"] = run_todo_write
+agent = create_agent(model=MODEL, tools=TOOLS,
+                     system_prompt=SYSTEM, middleware=MIDDLEWARE)
+result = agent.invoke({"messages": messages})
+todos = result.get("todos", [])
 ```
-
-**Reminder**：连续三个工具调用轮次没有使用 `todo_write` 时，reminder 会追加到第三轮的结果中，随后计数器清零：
-
+设置强硬提醒
 ```python
-rounds_since_todo = 0 if used_todo else rounds_since_todo + 1
-if rounds_since_todo >= 3:
-    results.append({
-        "type": "text",
-        "text": "<reminder>Update your todos.</reminder>",
-    })
-    rounds_since_todo = 0
+global rounds_since_todo
+
+    if rounds_since_todo >= 3 and messages:
+        messages.append({
+            "role": "user",
+            "content": "<reminder>Update your todos with write_todos before continuing.</reminder>",
+        })
+        rounds_since_todo = 0
 ```
 
-Agent 收到任务后的典型流程：先调 `todo_write` 列出所有步骤（全 `pending`）→ 做一个步骤，改成 `in_progress` → 做完改成 `completed` → 看下一个 `pending` → 继续。
-
-**关键洞察**：todo_write 不给 Agent 增加任何**执行能力**。它增加的是**规划能力**。
+`code_streaming.py` 它用 LangGraph streaming，按图步骤增量展示消息和 Todo，而不是在干完活之后再把消息打印出来。
 
 ---
 
-## 相对 s04 的变更
+## 本章文件
 
-| 组件 | 之前 (s04) | 之后 (s05) |
-|------|-----------|-----------|
-| 工具数量 | 5 (bash, read, write, edit, glob) | 6 (+todo_write) |
-| 规划能力 | 无 | 带状态的 TODO 列表 + reminder |
-| SYSTEM 提示 | 通用提示 | 加入 "先计划再执行" 引导 |
-| 循环 | 工具分发与 Hooks | 保留分发路径，加入 rounds_since_todo 和 reminder 注入 |
-
----
-
-## 结合本章代码理解 Agent State 与 Todo Middleware
-
-[`code.py`](code.py) 的 `TodoManager` 是一个显式的会话内状态容器。它不把计划写进自然语言历史后就不管，而是把每一项约束为结构化记录：`content` 表示任务，`status` 只能是 `pending / in_progress / completed`，`activeForm` 表示当前进行时描述。
-
-### 一次 `todo_write` 如何更新状态
-
-1. `run_todo_write()` 接收列表；为兼容部分模型，也接受 JSON 字符串或 Python list 字面量。
-2. 字符串只通过 `json.loads()` 和 `ast.literal_eval()` 解析，不使用危险的 `eval()`。
-3. `TodoManager.update()` 先完整校验候选列表，再一次性替换旧状态；失败不会留下半更新数据。
-4. 状态约束要求最多一个 `in_progress`，防止模型同时声称正在做多个串行步骤。
-5. `render()` 把结构化状态转成模型和用户容易阅读的进度视图。
-6. Agent 连续三批工具结果未更新 Todo 时，运行时追加一次提醒，而不是每轮重复污染上下文。
-
-这里的关键是“先验证、后提交”。Todo 是控制状态，不应因为模型少传一个字段就把原计划破坏掉。
-
-### 与 LangChain `TodoListMiddleware` 的关系
-
-LangChain 的内置 Todo middleware 会为 Agent 增加写入 Todo 的工具，并把 Todo 保存到 Agent state。本章手写 `TodoManager`，因此可以直接看到状态校验、提醒注入和渲染行为；代价是它只存在于当前 Python 进程，退出后不会自动恢复。
-
-仓库中的 [`code_streaming.py`](code_streaming.py) 展示了更框架化的版本：
-
-- `create_agent()` 创建运行在 LangGraph 上的 Agent。
-- `TodoListMiddleware` 管理结构化 Todo state。
-- `before_agent`、`wrap_tool_call`、`after_agent` 承接 s04 的 hooks。
-- `agent.stream(..., stream_mode="values")` 在每个图步骤后给出当前 state，因此可以逐步显示工具调用、Todo 变化和最终回复。
-
-### Todo、Task 和 Graph state 不相同
-
-| 概念 | 生命周期 | 用途 |
-|---|---|---|
-| 本章 Todo | 当前进程 / 当前会话 | 给模型一张短期执行清单 |
-| s10 Task | 文件持久化、带依赖和 owner | 协调可认领的工作单元 |
-| LangGraph state | 一个 thread 的图执行状态 | 在节点间传值，可由 checkpointer 持久化 |
-
-如果把本章迁移到 LangGraph，Todo 最自然地成为 state 的一个字段，并由 reducer 或 middleware 定义更新规则；需要跨进程恢复时，再给编译后的图配置 checkpointer。
-
-官方概念：[Built-in middleware](https://docs.langchain.com/oss/python/langchain/middleware/built-in) · [LangGraph persistence](https://docs.langchain.com/oss/python/langgraph/persistence)
+`code.py` 是带注释的 invoke 版；`code_streaming.py` 是 s05.5 流式归档版；`code_uncommented.py` 是 invoke 版去掉教学注释的精简版。
 
 ---
 
 ## 试一下
 
-```sh
-cd learn-claude-code
-python s05_todo_write/code.py
+先在仓库根目录准备环境，然后从根目录按模块运行：
+
+```powershell
+python -m venv venv
+.\venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+Copy-Item .env.example .env
+python -m s05_todo_write.code
 ```
 
-试试这些 prompt：
-
-1. `Refactor s05_todo_write/example/hello.py: add type hints, docstrings, and a main guard`（先列 3 步再执行）
-2. `Create a Python package under s05_todo_write/example/demo_pkg with __init__.py, utils.py, and tests/test_utils.py`
-3. `Review Python files under s05_todo_write/example and fix any style issues`
-
-观察重点：第一次工具调用是不是 `todo_write`？TODO 列了几步？执行过程中状态有没有从 `pending` 变成 `in_progress` / `completed`？
+> 这些教学 Agent 可以执行命令和修改文件。建议先在测试目录中试用，并认真阅读每次权限提示。
 
 ---
 
 ## 接下来
 
-Agent 能计划了。但如果一个任务太大，比如"重构整个认证模块"，光靠 TODO 列表不够。这个任务本身就是几十个小任务的集合，放在同一个对话里会被上下文淹没。
-
-s06 Subagent → 把大任务拆成子任务，每个子任务派一个独立的 Agent。它们有自己的干净上下文，不会互相污染。
----
-
-<!-- upstream-cc-source:start -->
-## 深入 CC 源码
-
-> 原文：[s05_todo_write](https://github.com/shareAI-lab/learn-claude-code/blob/67a9126c6435a8654ba7a6f68c0fd2130f00a462/s05_todo_write/README.md)。以下折叠块保持原文，文中的章号与源码行号沿用该版本。
+s06 把独立子问题交给隔离上下文中的子 Agent。
 
 <details>
 <summary>深入 CC 源码</summary>
@@ -212,4 +109,3 @@ Task System 相比 TodoWrite 的核心增量：
 
 </details>
 
-<!-- upstream-cc-source:end -->
