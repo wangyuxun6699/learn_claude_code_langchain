@@ -36,6 +36,15 @@ ignore = ["E501"]
 "tests/test_agent_teams_runtime.py" = ["B023"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+# s05-s17 are pinned to the restored teaching baseline.  The other test files
+# target later experimental APIs and remain available for explicit migration
+# runs, but they are not part of the default baseline suite.
+testpaths = [
+    "tests/test_s01_create_agent.py",
+    "tests/test_s02_create_agent.py",
+    "tests/test_s04_hooks.py",
+    "tests/test_smoke.py",
+    "tests/test_chapter_startup.py",
+]
 addopts = "-q"
 pythonpath = ["."]

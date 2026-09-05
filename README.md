@@ -427,11 +427,11 @@ BASE_URL=https://your-openai-compatible-endpoint/v1
 
 ```bash
 pip install -r requirements-dev.txt  # pytest + ruff
-pytest -q                            # 17 章机制、集成边界与 harness 完整回归
+python -m pytest -q                  # 当前恢复基线、全库语法和 17 章离线启动检查
 ruff check tests scripts             # lint 测试与维护脚本
 ```
 
-CI（[.github/workflows/ci.yml](.github/workflows/ci.yml)）在 Python 3.11 / 3.13 执行同样两步：用 `py_compile` 机器验证“逐章无语法错误”，章节运行时仍需真实 API key 手动验证。
+CI（[.github/workflows/ci.yml](.github/workflows/ci.yml)）在 Python 3.11 / 3.13 执行同样两步：`py_compile` 验证全部源码语法，并给每章注入无效测试配置后启动、立即退出，确认导入与 CLI 初始化不需要真实 API key 或网络。`tests/` 中面向恢复基线之后 API 的演进测试仍保留，可在后续迁移对应章节时显式运行。
 
 ## 全部章节
 
