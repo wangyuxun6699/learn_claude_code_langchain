@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-LESSONS = tuple(
+TOOL_LESSONS = tuple(
     ROOT / chapter / "code.py"
     for chapter in (
         "s02_tool_use",
@@ -27,9 +27,10 @@ LESSONS = tuple(
         "s14_mcp_plugin",
     )
 )
+LOOP_LESSONS = TOOL_LESSONS[1:]
 INTEGRATED_LESSON = ROOT / "s15_integrated_harness" / "code.py"
 GOAL_LESSON = ROOT / "s17_goal_loop" / "code.py"
-GLOB_LESSONS = (*LESSONS, INTEGRATED_LESSON, GOAL_LESSON)
+GLOB_LESSONS = (*TOOL_LESSONS, INTEGRATED_LESSON, GOAL_LESSON)
 
 
 class FakeMessagesApi:
@@ -140,6 +141,9 @@ def bash_tool_call():
 def run_glob_tool(lesson, workdir: Path, pattern: str) -> str:
     if hasattr(lesson, "run_glob"):
         return lesson.run_glob(pattern)
+    tool = getattr(lesson, "glob", None)
+    if hasattr(tool, "invoke"):
+        return tool.invoke({"pattern": pattern})
     session = object.__new__(lesson.AgentSession)
     session.workdir = workdir.resolve()
     return session._run_tool("glob", {"pattern": pattern})
@@ -154,6 +158,9 @@ def run_text_tool(lesson, workdir: Path, name: str, arguments: dict) -> str:
     handler = getattr(lesson, handlers[name], None)
     if handler is not None:
         return handler(**arguments)
+    tool = getattr(lesson, name, None)
+    if tool is not None:
+        return tool.invoke(arguments)
     session = object.__new__(lesson.AgentSession)
     session.workdir = workdir.resolve()
     return session._run_tool(name, arguments)
@@ -214,7 +221,7 @@ def test_glob_caps_large_result_sets(tmp_path: Path, lesson_path: Path):
     assert lines[-1] == "... (more matches omitted; narrow the pattern)"
 
 
-@pytest.mark.parametrize("lesson_path", LESSONS, ids=lambda path: path.parent.name)
+@pytest.mark.parametrize("lesson_path", LOOP_LESSONS, ids=lambda path: path.parent.name)
 @pytest.mark.parametrize("content", ([], None), ids=("empty-content", "empty-text"))
 def test_parent_loop_does_not_append_an_empty_tool_result_turn(
         lesson_path: Path, content):
@@ -238,7 +245,7 @@ def test_parent_loop_does_not_append_an_empty_tool_result_turn(
         )
 
 
-@pytest.mark.parametrize("lesson_path", LESSONS, ids=lambda path: path.parent.name)
+@pytest.mark.parametrize("lesson_path", LOOP_LESSONS, ids=lambda path: path.parent.name)
 def test_parent_loop_executes_a_real_tool_call_even_if_stop_reason_disagrees(
         lesson_path: Path):
     with tempfile.TemporaryDirectory() as tmp:

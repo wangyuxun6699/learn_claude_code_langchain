@@ -5,7 +5,7 @@
 
 框架选对了，代码量最多可以少一半。这个仓库基于 [LangChain](https://github.com/langchain-ai/langchain) 和 [LangGraph](https://github.com/langchain-ai/langgraph)，深入拆解 Claude Code 这类 coding agent 的 Harness。
 
-本项目已对齐 [shareAI-lab/learn-claude-code](https://github.com/shareAI-lab/learn-claude-code) 的 17 章源码结构（功能同步基线：`08263f49b3d5c895ea61d56a3737d8eebe624f20`；本次结构核对：main `0dcafa2ae053a1ddd6a72f265431104b08a5aa13`）。章节中的 Agent Loop、工具协议、Hook、Context、Task、Team、Workflow 与 Goal 实现保留上游结构；s01 使用 LangChain `create_agent` 展示框架提供的最小 Agent，后续章节再逐步展开 Harness 机制。
+本项目已对齐 [shareAI-lab/learn-claude-code](https://github.com/shareAI-lab/learn-claude-code) 的 17 章源码结构（功能同步基线：`08263f49b3d5c895ea61d56a3737d8eebe624f20`；本次结构核对：main `0dcafa2ae053a1ddd6a72f265431104b08a5aa13`）。章节中的 Agent Loop、工具协议、Hook、Context、Task、Team、Workflow 与 Goal 实现保留上游结构；s01 使用 LangChain `create_agent` 展示框架提供的最小 Agent，s02 沿用同一 Agent Loop 增加结构化工具，后续章节再逐步展开 Harness 机制。
 
 > Agency 来自模型，Agent 产品 = 模型 + Harness。
 
@@ -197,7 +197,7 @@ Claude Code = 一个 agent loop
 
 > **s01** &nbsp; *"One loop & Bash is all you need"* &mdash; 一个工具 + 一个循环 = 一个 Agent
 >
-> **s02** &nbsp; *"加一个工具, 只加一个 handler"* &mdash; 循环不用动, 新工具注册进 dispatch map 就行
+> **s02** &nbsp; *"工具自己描述自己"* &mdash; 循环不用动，新增一个 `@tool` 函数并加入 `TOOLS` 即可
 >
 > **s03** &nbsp; *"先划边界, 再给自由"* &mdash; 先判断操作能不能做，要不要问用户
 >
@@ -248,13 +248,13 @@ Claude Code = 一个 agent loop
 
 ## 上游对齐与章节继承关系
 
-课程的阅读顺序是 s01 → s17。下表的“代码基线”表示教学机制的演进关系，**不是 Python 的类继承或跨章 import**。s01 用 `create_agent` 建立最小智能体，s02–s14 在各自文件内展开本章需要的模型适配、工具、权限和循环；s17 也独立实现。与上游 main 一致，s15 通过文件加载复用 s09 的 Memory，s16 通过文件加载复用 s15 宿主，s15 不反向依赖 s16。
+课程的阅读顺序是 s01 → s17。下表的“代码基线”表示教学机制的演进关系，**不是 Python 的类继承或跨章 import**。s01 用 `create_agent` 建立最小智能体，s02 保持这个实现并扩展工具；s03 起为了展示权限、Hook 等底层控制点，在各章单文件中展开消息适配和调用循环。s17 也独立实现。与上游 main 一致，s15 通过文件加载复用 s09 的 Memory，s16 通过文件加载复用 s15 宿主，s15 不反向依赖 s16。
 
 | 章节 | 代码基线 | 本章加入或组合的机制 |
 |---|---|---|
 | s01 | 最小内核 | `create_agent` + Bash + stream |
-| s02 | s01 | 多工具与 dispatch map，循环不变 |
-| s03 | s02 | 三段式权限检查 |
+| s02 | s01 | 四个新 `@tool` + `TOOLS` 注册，Agent Loop 不变 |
+| s03 | s02 的五工具能力 | 展开底层循环并加入三段式权限检查 |
 | s04 | s03 | 把权限与扩展逻辑移入 Hook |
 | s05 | s04 | TodoWrite |
 | s06 | s04 基础内核 | 一次性、隔离上下文的 Subagent |

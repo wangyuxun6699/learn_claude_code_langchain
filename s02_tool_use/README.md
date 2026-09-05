@@ -1,7 +1,7 @@
-# s02: Tool Use — 多加一个工具，只加一行
+# s02: Tool Use — 循环不变，只扩展工具
 
 s01 → `s02` → [s03](../s03_permission/) → s04 → ... → s16 → s17
-> *"加一个工具, 只加一个 handler"* — 循环不用动, 新工具注册进 dispatch map 就行。
+> *"工具自己描述自己"* — Agent Loop 不动，新增一个 `@tool` 函数并加入 `TOOLS` 即可。
 >
 > **Harness 层**: 工具分发 — 扩展模型能触达的边界。
 
@@ -15,100 +15,80 @@ s01 的 Agent 只有一个 bash 工具。读文件要 `cat`，写文件要 `echo
 
 ---
 
-## 全局视角：工具分发
+## 全局视角：工具注册
 
 ![Tool Dispatch](images/tool-dispatch.svg)
 
-s01 的循环完全保留（LLM 调用、`tool_use` block 判断、消息追加）。唯一的变动在工具执行那 1 行：`run_bash()` 替换为 `TOOL_HANDLERS[block.name]()` 查表分发。
+s01 的模型配置、`create_agent()`、流式消费和会话历史更新全部保留。第二章只增加四个 `@tool` 函数，并把传给 Agent 的工具列表从一个扩展为五个。
 
 给 Agent 加一个工具只需要做两件事：
 
-1. **定义工具**：在 `TOOLS` 数组里加一条描述
-2. **注册处理函数**：在 `TOOL_HANDLERS` 字典里加一个映射
+1. **定义工具**：给带类型标注和 docstring 的 Python 函数加上 `@tool`
+2. **注册工具**：把生成的工具对象加入 `TOOLS`
+
+工具 schema、调用分发、`ToolMessage` 回填和循环继续都由 LangChain/LangGraph 负责。
 
 ---
 
 ## 从 1 个工具到 5 个工具
 
-s01 只有一个 bash：
+s01 只有一个 `bash` 工具：
 
 ```python
-TOOLS = [{"name": "bash", ...}]
+@tool
+def bash(command: str) -> str:
+    """Run a shell command in the current working directory."""
+    ...
 
-def run_bash(command): ...
+TOOLS = [bash]
 ```
 
-s02 加到 5 个，每个工具都是独立定义：
+s02 保留它，再封装四个意图更明确的文件工具：
 
 ```python
-TOOLS = [
-    {"name": "bash",       "description": "Run a shell command.", ...},
-    {"name": "read_file",  "description": "Read file contents.",  ...},
-    {"name": "write_file", "description": "Write content to file.", ...},
-    {"name": "edit_file",  "description": "Replace text in file once.", ...},
-    {"name": "glob",       "description": "Find files by pattern.", ...},
-]
-```
-
-每个工具有自己的实现函数：
-
-```python
-def run_read(path, limit=None):
+@tool
+def read_file(path: str, limit: int | None = None) -> str:
+    """Read a UTF-8 text file in the workspace, optionally limiting lines."""
     lines = safe_path(path).read_text(encoding="utf-8").splitlines()
-    if limit:
+    if limit is not None:
         lines = lines[:limit]
     return "\n".join(lines)
 
-def run_write(path, content):
-    safe_path(path).write_text(content, encoding="utf-8")
-    return f"Wrote {len(content)} bytes to {path}"
-
-def run_edit(path, old_text, new_text):
+@tool
+def edit_file(path: str, old_text: str, new_text: str) -> str:
+    """Replace the first exact occurrence of old_text in a workspace file."""
     text = safe_path(path).read_text(encoding="utf-8")
     if old_text not in text:
         return "Error: text not found"
     safe_path(path).write_text(text.replace(old_text, new_text, 1), encoding="utf-8")
     return f"Edited {path}"
-
-def run_glob(pattern):
-    import glob as g
-    matches = sorted(set(g.glob(
-        pattern, root_dir=WORKDIR, recursive=True)))
-    shown = matches[:200]
-    if len(matches) > 200:
-        shown.append("... (more matches omitted; narrow the pattern)")
-    return "\n".join(shown)
 ```
+
+`write_file` 负责覆盖写入并自动创建父目录；`glob` 支持 `**` 递归匹配，并把输出限制在 200 项。完整实现见 [`code.py`](code.py)。
 
 ---
 
-## 工具分发
+## 工具注册
 
 ```python
-TOOL_HANDLERS = {
-    "bash":       run_bash,
-    "read_file":  run_read,
-    "write_file": run_write,
-    "edit_file":  run_edit,
-    "glob":       run_glob,
-}
+TOOLS = [bash, read_file, write_file, edit_file, glob]
 
-# 循环里只改了一行——从硬编码 run_bash 变成查表：
-for block in tool_calls:
-    handler = TOOL_HANDLERS[block.name]    # 查表
-    output = handler(**block.input)         # 调用
-    results.append(...)
+agent = create_agent(
+    model=model,
+    tools=TOOLS,
+    system_prompt=SYSTEM,
+)
 ```
 
-加一个工具 = 在 `TOOLS` 数组加一条 + 在 `TOOL_HANDLERS` 字典加一行。循环不变。
+`@tool` 根据函数名、类型标注和 docstring 生成模型可见的 schema。`create_agent` 内部的工具节点按名称找到 Python 工具、校验参数、执行调用，并用相同的调用 ID 生成 `ToolMessage`。业务代码不再维护一份容易与 schema 失配的 `TOOL_HANDLERS`。
 
 ---
 
 ## 多个工具调用
 
-模型经常一次返回多个 tool_use："读一下 a.py 和 b.py，然后列出所有 .py 文件"。
+模型经常一次返回多个工具调用："读一下 a.py 和 b.py，然后列出所有 .py 文件"。
 
-这些调用按照 `response.content` 中的原始顺序逐个执行。
+`create_agent` 会把这些调用统一交给工具节点执行，再将全部结果送回模型。需要注意：预构建工具节点可以并行执行同一批调用，因此不要假定同一轮里的 `write_file` 与 `read_file` 存在先后关系；有数据依赖时，模型应分成两轮调用。并发安全分区和权限判断会在后续章节逐步展开。
 
 ---
 
@@ -116,10 +96,10 @@ for block in tool_calls:
 
 | 概念 | 一句话 |
 |------|--------|
-| TOOL_HANDLERS | 工具名 → 处理函数的字典。加工具 = 加一行映射 |
-| 工具定义 | 告诉模型"我能做什么"的 JSON schema |
-| 多工具调用 | 模型可一次返回多个 tool_use，并按原始顺序逐个执行 |
-| 循环不变 | s01 的 `while True` 循环一行都没改 |
+| `@tool` | 从函数名、签名和 docstring 生成工具对象与 JSON Schema |
+| `TOOLS` | 传给 `create_agent` 的五个工具对象 |
+| 多工具调用 | LangGraph 工具节点执行并回填与调用 ID 对应的结果 |
+| 循环不变 | s01 的 `create_agent` 和 stream 消费逻辑保持一致 |
 
 ---
 
@@ -128,27 +108,27 @@ for block in tool_calls:
 | 组件 | 之前 (s01) | 之后 (s02) |
 |------|-----------|-----------|
 | 工具数量 | 1 (bash) | 5 (+read, write, edit, glob) |
-| 工具执行 | 硬编码 `run_bash()` | TOOL_HANDLERS 查表分发 |
-| 路径安全 | 无 | safe_path 校验（仅 file tools） |
-| 循环 | `while True` + `tool_use` block | 与 s01 完全一致 |
+| 工具声明 | 一个 `@tool` 函数 | 五个 `@tool` 函数 + `TOOLS` 列表 |
+| 路径安全 | bash 无工作区路径约束 | 四个文件工具由 `safe_path()` 限制在工作区 |
+| Agent Loop | `create_agent` + stream | 完全一致 |
 
 ---
 
 ## 结合 `code.py` 理解 LangChain / LangGraph
 
-本章的重点不是“多写四个 Python 函数”，而是把工具拆成两个必须保持一致的部分：给模型看的 schema，以及宿主真正执行的 handler。
+本章的重点不是“多写四个 Python 函数”，而是让工具的声明、实现与运行时注册保持在同一个抽象里。
 
 ### 工具从声明到执行的完整路径
 
-[`code.py`](code.py) 中的 `TOOLS` 是模型可见的能力目录，`TOOL_HANDLERS` 是运行时分发表：
+[`code.py`](code.py) 中的完整调用路径是：
 
 ```text
-TOOLS.input_schema → _openai_tools() → ChatOpenAI.bind_tools()
-→ AIMessage.tool_calls → ToolUseBlock(name, input, id)
-→ TOOL_HANDLERS[name](**input) → tool_result(tool_use_id=id)
+Python 函数 + @tool → StructuredTool（名称、描述、参数 schema）
+→ create_agent(tools=TOOLS) → 模型产生 AIMessage.tool_calls
+→ LangGraph ToolNode 执行工具 → ToolMessage → 模型继续推理
 ```
 
-名称是两侧的连接键。schema 声明了 `read_file`，分发表就必须存在同名 handler；参数字段也必须能被 `handler(**block.input)` 接收。未知工具不会直接崩溃，而是作为工具结果回给模型，让模型有机会修正。
+工具函数本身同时提供 schema 和执行入口，避免了旧实现中 `TOOLS` JSON 与 `TOOL_HANDLERS` 两处注册发生漂移。工具结果中的调用 ID 也由框架维护。
 
 ### 五个工具各自承担的边界
 
@@ -164,16 +144,16 @@ TOOLS.input_schema → _openai_tools() → ChatOpenAI.bind_tools()
 
 ### 与 LangChain 工具系统的关系
 
-本章直接写 JSON Schema，是为了展示 provider 无关的底层协议。LangChain 更常见的写法是用 `@tool` 或 `StructuredTool` 从 Python 类型标注生成 schema，再交给 `bind_tools()`。如果使用预构建 Agent，`ToolNode` 会负责读取 `AIMessage.tool_calls`、调用工具并生成带正确调用 ID 的 `ToolMessage`。
+本章使用 LangChain 的常规写法：`@tool` 从 Python 类型标注生成 schema，`create_agent` 创建的 LangGraph 执行图负责模型节点与工具节点之间的路由。
 
-- `bind_tools()`：把工具定义告诉模型，不执行工具。
-- `TOOL_HANDLERS` 或 `ToolNode`：执行模型提出的调用。
-- Agent loop：决定执行完后是否再次调用模型。
-- LangGraph：在需要持久化、分支、并行或人工中断时管理这些节点。
+- `@tool`：把一个普通函数变成有 schema 的 `StructuredTool`。
+- `TOOLS`：显式列出本章开放给模型的能力边界。
+- `create_agent`：绑定工具并建立“模型 → 工具 → 模型”执行图。
+- `stream`：输出模型 token，并用最终 state 延续多轮会话。
 
-虽然模型一次响应可以给出多个调用，本章的 `for block in tool_calls` 仍是串行调度。只有明确使用异步任务、支持并行的工具节点或图分支，才获得真正的并行执行。
+本章仍然只做基础路径约束。`bash` 可以执行任意未被简单危险片段命中的命令，文件覆盖也不会询问用户；真正的 allow / deny / ask 权限策略属于 s03。
 
-官方概念：[Tools](https://docs.langchain.com/oss/python/langchain/tools) · [Models 中的工具调用](https://docs.langchain.com/oss/python/langchain/models)
+官方概念：[Tools](https://docs.langchain.com/oss/python/langchain/tools) · [Agents 与 `create_agent`](https://docs.langchain.com/oss/python/langchain/agents) · [Streaming](https://docs.langchain.com/oss/python/langchain/streaming)
 
 ---
 
@@ -191,15 +171,15 @@ python s02_tool_use/code.py
 3. `Find all Python files in this directory`
 4. `Read both README.md and requirements.txt, then create a summary file`
 
-观察重点：模型什么时候只调一个工具，什么时候一次调多个？多个工具调用的顺序和结果是否正确？
+观察重点：模型什么时候只调一个工具，什么时候一次调多个？存在数据依赖时，它是否会等结果返回后再发起下一轮调用？
 
 ---
 
 ## 接下来
 
-现在 Agent 有 5 个专用工具。file tools 受 `safe_path` 保护，但 bash 不受限制，`rm -rf /` 还是能跑。
+现在 Agent 有 5 个工具。文件工具受 `safe_path` 保护，但 bash 仍有很大的操作范围，写入与编辑也会直接执行。
 
-s03 Permission → 在工具执行之前加一道门：这个操作安全吗？需要用户批准吗？
+s03 Permission → 为了看清“工具执行之前”的控制点，下一章会展开底层调用循环并加入 allow / deny / ask 权限门。
 ---
 
 <!-- upstream-cc-source:start -->

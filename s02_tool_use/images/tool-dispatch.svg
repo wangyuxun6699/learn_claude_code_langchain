@@ -24,7 +24,7 @@
   <!-- 标题 -->
   <rect x="0" y="0" width="720" height="48" fill="url(#header)" rx="8"/>
   <rect x="0" y="40" width="720" height="8" fill="url(#header)"/>
-  <text x="360" y="31" fill="#fff" font-size="16" font-weight="700" text-anchor="middle">Tool Use — 循环不变，只加分发映射</text>
+  <text x="360" y="31" fill="#fff" font-size="16" font-weight="700" text-anchor="middle">Tool Use — Agent Loop 不变，只扩展工具列表</text>
 
   <!-- ===== s01 (灰色，保留部分) ===== -->
   <text x="50" y="76" fill="#94a3b8" font-size="11" font-weight="600">s01 保留</text>
@@ -40,14 +40,14 @@
   <!-- LLM -->
   <rect x="270" y="82" width="150" height="52" rx="8" fill="#fff" stroke="#2563eb" stroke-width="1.5"/>
   <text x="345" y="104" fill="#1e3a5f" font-size="13" font-weight="700" text-anchor="middle">大模型 (LLM)</text>
-  <text x="345" y="122" fill="#64748b" font-size="10" text-anchor="middle">stop_reason 判断</text>
+  <text x="345" y="122" fill="#64748b" font-size="10" text-anchor="middle">create_agent 模型节点</text>
 
   <!-- 箭头：LLM → 判断 -->
   <line x1="345" y1="134" x2="345" y2="162" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
 
   <!-- 判断菱形 -->
   <polygon points="345,166 415,196 345,226 275,196" fill="#fff8f0" stroke="#d97706" stroke-width="1.5"/>
-  <text x="345" y="194" fill="#92400e" font-size="10" font-weight="600" text-anchor="middle">tool_use?</text>
+  <text x="345" y="194" fill="#92400e" font-size="10" font-weight="600" text-anchor="middle">tool_calls?</text>
 
   <!-- 否 → 返回 -->
   <line x1="415" y1="196" x2="475" y2="196" stroke="#16a34a" stroke-width="1.5" marker-end="url(#arrow-green)"/>
@@ -59,12 +59,12 @@
   <line x1="345" y1="226" x2="345" y2="260" stroke="#d97706" stroke-width="1.5" marker-end="url(#arrow-orange)"/>
   <text x="356" y="248" fill="#d97706" font-size="9" font-weight="600">是</text>
 
-  <!-- ===== s02 新增：TOOL_HANDLERS 分发映射 ===== -->
+  <!-- ===== s02 新增：TOOLS 与 LangGraph ToolNode ===== -->
   <text x="505" y="282" fill="#d97706" font-size="11" font-weight="600">s02 新增</text>
 
   <!-- 分发映射外框 -->
   <rect x="195" y="268" width="300" height="200" rx="10" fill="#fff7ed" stroke="#d97706" stroke-width="2" stroke-dasharray="6,3"/>
-  <text x="345" y="290" fill="#92400e" font-size="12" font-weight="700" text-anchor="middle">TOOL_HANDLERS 分发映射</text>
+  <text x="345" y="290" fill="#92400e" font-size="12" font-weight="700" text-anchor="middle">TOOLS → LangGraph ToolNode</text>
 
   <!-- 箭头进入分发映射 -->
   <line x1="345" y1="260" x2="345" y2="268" stroke="#d97706" stroke-width="1.5"/>
@@ -72,37 +72,37 @@
   <!-- bash handler -->
   <rect x="220" y="300" width="120" height="34" rx="6" fill="#f0f4ff" stroke="#2563eb" stroke-width="1.2"/>
   <text x="280" y="316" fill="#1e3a5f" font-size="11" font-weight="600" text-anchor="middle">bash</text>
-  <text x="280" y="328" fill="#64748b" font-size="9" text-anchor="middle">→ run_bash()</text>
+  <text x="280" y="328" fill="#64748b" font-size="9" text-anchor="middle">@tool bash()</text>
 
   <!-- read_file handler -->
   <rect x="360" y="300" width="120" height="34" rx="6" fill="#ecfdf5" stroke="#16a34a" stroke-width="1.2"/>
   <text x="420" y="316" fill="#166534" font-size="11" font-weight="600" text-anchor="middle">read_file</text>
-  <text x="420" y="328" fill="#64748b" font-size="9" text-anchor="middle">→ run_read()</text>
+  <text x="420" y="328" fill="#64748b" font-size="9" text-anchor="middle">@tool read_file()</text>
 
   <!-- write_file handler -->
   <rect x="220" y="346" width="120" height="34" rx="6" fill="#ecfdf5" stroke="#16a34a" stroke-width="1.2"/>
   <text x="280" y="362" fill="#166534" font-size="11" font-weight="600" text-anchor="middle">write_file</text>
-  <text x="280" y="374" fill="#64748b" font-size="9" text-anchor="middle">→ run_write()</text>
+  <text x="280" y="374" fill="#64748b" font-size="9" text-anchor="middle">@tool write_file()</text>
 
   <!-- edit_file handler -->
   <rect x="360" y="346" width="120" height="34" rx="6" fill="#ecfdf5" stroke="#16a34a" stroke-width="1.2"/>
   <text x="420" y="362" fill="#166534" font-size="11" font-weight="600" text-anchor="middle">edit_file</text>
-  <text x="420" y="374" fill="#64748b" font-size="9" text-anchor="middle">→ run_edit()</text>
+  <text x="420" y="374" fill="#64748b" font-size="9" text-anchor="middle">@tool edit_file()</text>
 
   <!-- glob handler -->
   <rect x="290" y="392" width="120" height="34" rx="6" fill="#ecfdf5" stroke="#16a34a" stroke-width="1.2"/>
   <text x="350" y="408" fill="#166534" font-size="11" font-weight="600" text-anchor="middle">glob</text>
-  <text x="350" y="420" fill="#64748b" font-size="9" text-anchor="middle">→ run_glob()</text>
+  <text x="350" y="420" fill="#64748b" font-size="9" text-anchor="middle">@tool glob()</text>
 
   <!-- 箭头：分发映射 → 回到消息列表 -->
   <path d="M 195 368 L 50 368 L 50 108 L 58 108" fill="none" stroke="#d97706" stroke-width="1.5" marker-end="url(#arrow-orange)" stroke-dasharray="6,3"/>
-  <text x="28" y="300" fill="#92400e" font-size="9" font-weight="500" transform="rotate(-90, 28, 300)">tool_result 追加到 messages</text>
+  <text x="28" y="300" fill="#92400e" font-size="9" font-weight="500" transform="rotate(-90, 28, 300)">ToolMessage 回到 Agent state</text>
 
   <!-- ===== 图例 ===== -->
   <rect x="60" y="492" width="600" height="52" rx="6" fill="#f1f5f9"/>
   <rect x="80" y="508" width="12" height="12" rx="2" fill="#f0f4ff" stroke="#2563eb" stroke-width="1"/>
-  <text x="100" y="518" fill="#334155" font-size="10">s01 保留（循环、LLM、判断——完全不变）</text>
+  <text x="100" y="518" fill="#334155" font-size="10">s01 保留（create_agent、stream——完全不变）</text>
   <rect x="380" y="508" width="12" height="12" rx="2" fill="#ecfdf5" stroke="#16a34a" stroke-width="1"/>
-  <text x="400" y="518" fill="#334155" font-size="10">s02 新增（5 个工具 + 分发映射）</text>
-  <text x="80" y="536" fill="#64748b" font-size="10">循环里只改了 1 行：run_bash() → TOOL_HANDLERS[block.name]()</text>
+  <text x="400" y="518" fill="#334155" font-size="10">s02 新增（4 个 @tool + TOOLS 列表）</text>
+  <text x="80" y="536" fill="#64748b" font-size="10">注册从 tools=[bash] 扩展为 tools=TOOLS，执行与结果回填由框架负责</text>
 </svg>
