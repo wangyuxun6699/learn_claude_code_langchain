@@ -185,7 +185,6 @@ s03 Permission → 为了看清“工具执行之前”的控制点，下一章�
 <!-- upstream-cc-source:start -->
 ## 深入 CC 源码
 
-> 原文：[s02_tool_use](https://github.com/shareAI-lab/learn-claude-code/blob/67a9126c6435a8654ba7a6f68c0fd2130f00a462/s02_tool_use/README.md)。以下折叠块保持原文，文中的章号与源码行号沿用该版本。
 
 <details>
 <summary>深入 CC 源码</summary>
