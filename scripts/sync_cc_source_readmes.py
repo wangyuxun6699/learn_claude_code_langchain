@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import re
 from pathlib import Path
 
 try:
@@ -43,11 +42,6 @@ CHAPTER_MAP = {
     "s15_integrated_harness": ["s20_comprehensive"],
     "s16_workflow_runtime": [],
     "s17_goal_loop": [],
-    "legacy/s10_system_prompt": ["s10_system_prompt"],
-    "legacy/s11_error_recovery": ["s11_error_recovery"],
-    "legacy/s16_team_protocols": ["s16_team_protocols"],
-    "legacy/s17_autonomous_agents": ["s17_autonomous_agents"],
-    "legacy/s18_worktree_isolation": ["s18_worktree_isolation"],
 }
 
 
@@ -69,27 +63,12 @@ def without_previous_source(text: str) -> str:
     return text.strip()
 
 
-def alignment_note(chapter: str) -> str:
-    if chapter == "s16_workflow_runtime":
-        implementation = "Workflow 在本章实现，模型调用通过 s15 宿主执行"
-    elif chapter == "s15_integrated_harness":
-        implementation = "模型适配与平台兼容代码在本章直接实现，Memory 按上游复用 s09"
-    else:
-        implementation = "模型适配与本章机制在 `code.py` 中直接实现"
-    return (
-        f"> **对齐状态**：本章 `code.py` 对齐上游 `{chapter}` 的结构；"
-        f"{implementation}，使用 LangChain OpenAI-compatible 调用。"
-    )
-
-
 def sync(upstream_root: Path, root: Path = ROOT) -> dict:
     records = {}
     pending = {}
     for chapter, upstream_chapters in CHAPTER_MAP.items():
         target = root / chapter / "README.md"
         text = without_previous_source(target.read_text(encoding="utf-8"))
-        if not chapter.startswith("legacy/"):
-            text = re.sub(r"^> \*\*对齐状态\*\*：.*$", alignment_note(chapter), text, flags=re.M)
         parts = [START, "## 深入 CC 源码", ""]
         sources = []
         for upstream_chapter in upstream_chapters:

@@ -1,4 +1,4 @@
-"""逐章可运行性冒烟测试：全部 .py 必须通过 py_compile；harness 可导入。"""
+"""逐章可运行性冒烟测试：全部 Python 源文件必须通过 py_compile。"""
 import pathlib
 import py_compile
 
@@ -21,7 +21,3 @@ def test_all_source_files_compile():
     assert files, "no source files found"
     for p in files:
         py_compile.compile(str(p), doraise=True)
-
-
-def test_harness_importable():
-    import harness  # noqa: F401

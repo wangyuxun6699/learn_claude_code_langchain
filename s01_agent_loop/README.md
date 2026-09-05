@@ -19,140 +19,111 @@
 
 ---
 
-## 解决方案
+## 解决方案：用 `create_agent` 创建智能体
 
 ![Agent Loop](images/agent-loop.svg)
 
-一个 `while True` 循环，模型调用工具就继续，不调用就停。循环直接检查响应里的内容块：
+参考项目用一个显式 `while True` 实现“模型 → 工具 → 模型”的循环。本章使用 LangChain 的 `create_agent()` 创建同等功能的智能体：模型调用工具时继续运行，没有工具调用时返回最终回答。
 
-| 信号 | 含义 | 循环动作 |
-|------|------|---------|
-| 包含 `tool_use` block | 模型要求调用工具 | 执行 → 结果喂回去 → 继续 |
-| 不包含 `tool_use` block | 模型没有调用工具 | 退出循环 |
+| 参考实现 | 本章的 LangChain 实现 |
+|---|---|
+| 手工维护 `messages` | Agent state 自动维护消息 |
+| 手工检查 `tool_use` | `create_agent` 根据 `AIMessage.tool_calls` 路由 |
+| 手工执行并回填 `tool_result` | 工具节点执行并生成 `ToolMessage` |
+| `while True` 控制继续或结束 | LangGraph 执行图自动循环和结束 |
+| 最终一次性打印回答 | `stream(..., stream_mode="messages")` 按 token 输出 |
 
 ---
 
-## 工作原理
+## 核心代码片段
 
-将这个过程翻译成代码。分步来看：
+完整实现见 [`code.py`](code.py)，主体只包含模型、一个 Bash 工具、`create_agent` 和流式消费四部分。
 
-**第 1 步**：把用户的问题作为第一条消息。
+### 1. 配置模型
 
-```python
-messages = [{"role": "user", "content": query}]
-```
-
-**第 2 步**：将消息和工具定义一起发给 LLM。
+传入 `ChatOpenAI` 实例，可以继续使用 `.env` 中的 OpenAI-compatible 地址和模型名：
 
 ```python
-response = client.messages.create(
-    model=MODEL, system=SYSTEM, messages=messages,
-    tools=TOOLS, max_tokens=8000,
+model = ChatOpenAI(
+    model=os.environ["MODEL_ID"],
+    api_key=os.getenv("OPENAI_API_KEY"),
+    base_url=os.getenv("BASE_URL") or None,
+    max_completion_tokens=8000,
+    temperature=0,
 )
 ```
 
-**第 3 步**：追加模型回答，检查它是否调了工具。没调 → 结束。
+### 2. 把普通函数声明成工具
+
+函数签名生成参数 schema，docstring 告诉模型工具的用途。命令执行、输出截断、超时和基础危险命令拦截都直接放在同一个工具函数中，便于第一章完整阅读。
 
 ```python
-messages.append({"role": "assistant", "content": response.content})
-tool_calls = [
-    block for block in response.content if block.type == "tool_use"
-]
-if not tool_calls:
-    return
+@tool
+def bash(command: str) -> str:
+    """Run a shell command in the current working directory."""
+    dangerous = ["rm -rf /", "sudo", "shutdown", "reboot", "> /dev/"]
+    if any(fragment in command for fragment in dangerous):
+        return "Error: Dangerous command blocked"
+
+    result = subprocess.run(
+        command,
+        shell=True,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    return (result.stdout + result.stderr).strip() or "(no output)"
 ```
 
-只有实际存在的 `tool_use` block 才会进入执行阶段，因此不会追加空的工具结果消息。
-
-**第 4 步**：执行模型要求的工具，收集结果。
+### 3. 创建智能体
 
 ```python
-results = []
-for block in tool_calls:
-    output = run_bash(block.input["command"])
-    results.append({
-        "type": "tool_result",
-        "tool_use_id": block.id,
-        "content": output,
-    })
+agent = create_agent(
+    model=model,
+    tools=[bash],
+    system_prompt=SYSTEM,
+)
 ```
 
-**第 5 步**：把工具结果作为新消息追加，回到第 2 步。
+这一行会在 LangGraph 上创建预构建执行图。它完成参考实现中的关键闭环：调用模型、识别工具调用、执行 Bash、将结果作为 `ToolMessage` 放回状态，再次调用模型，直到模型给出最终回答。
+
+### 4. 使用 `stream` 实时输出
 
 ```python
-messages.append({"role": "user", "content": results})
+for chunk in agent.stream(
+    {"messages": messages},
+    stream_mode=["messages", "values"],
+    version="v2",
+):
+    if chunk["type"] == "messages":
+        token, metadata = chunk["data"]
+        if metadata.get("langgraph_node") == "model" and token.text:
+            print(token.text, end="", flush=True)
+    elif chunk["type"] == "values":
+        final_messages = chunk["data"]["messages"]
 ```
 
-组装为一个完整函数：
+两个 stream mode 各有职责：
 
-```python
-def agent_loop(messages):
-    while True:
-        response = client.messages.create(
-            model=MODEL, system=SYSTEM, messages=messages,
-            tools=TOOLS, max_tokens=8000,
-        )
-        messages.append({"role": "assistant", "content": response.content})
+- `messages` 提供模型 token，因此用户不用等整轮 Agent Loop 结束才看到回答。
+- `values` 在图节点完成后提供完整 state，本章用最后一次 state 更新会话历史，以便下一轮继续对话。
 
-        tool_calls = [
-            block for block in response.content if block.type == "tool_use"
-        ]
-        if not tool_calls:
-            return
-
-        results = []
-        for block in tool_calls:
-            output = run_bash(block.input["command"])
-            results.append({
-                "type": "tool_result",
-                "tool_use_id": block.id,
-                "content": output,
-            })
-        messages.append({"role": "user", "content": results})
-```
-
-三十多行，这就是最小可运行的 agent harness 内核。它为模型提供持续行动的最小运行框架：模型负责决策（要不要调工具、调哪个），harness 负责执行（调用工具，把结果作为新消息追加）。后面 16 个章节都在这个循环上叠加机制，循环本身始终不变。
+`bash` 工具自己打印命令和一小段输出，因此运行时可以同时观察“模型正在回答什么”和“Agent 执行了什么”。
 
 ---
 
-## 结合 `code.py` 理解 LangChain / LangGraph
+## 结合 `code.py` 理解 LangChain 的特点
 
-本章没有调用 `create_agent()`，也没有创建 `StateGraph`。这是刻意的：先把框架通常替你完成的工作摊开，才能看清 Agent 的最小闭环。
+- **代码短**：`create_agent` 封装标准的模型/工具循环，第一章不用自建消息适配器、工具路由和 `while True`。
+- **模型接口统一**：本章使用 `ChatOpenAI`，也可以替换为其他 LangChain chat model；Agent 主体无需跟着重写。
+- **工具协议统一**：`@tool` 从 Python 类型标注和 docstring 生成工具定义，LangChain 自动维护工具调用 ID 与 `ToolMessage` 的对应关系。
+- **图运行时**：`create_agent` 构建的是 LangGraph compiled graph，因此天然支持 stream、state、checkpoint 和后续 middleware 扩展。
+- **流式可观察**：`messages` 模式输出 LLM token，`updates` 或 `values` 模式输出 Agent 执行进度/状态；多个模式可以组合使用。
+- **渐进扩展**：后续可以通过 middleware 加权限、Hook、动态提示词与错误处理，而不必改写核心循环。
 
-### 模型边界实际做了什么
+这里的“代码更少”不是删除 Agent Loop：循环仍然存在，只是从本章的业务代码下沉到了 LangChain/LangGraph 的预构建运行时。模型仍负责决定是否调用工具，Harness 仍负责可靠地执行工具和回传结果。
 
-从 [`code.py`](code.py) 的 `_MessagesAPI.create()` 开始读，调用链是：
-
-1. `ChatOpenAI(...)` 从 `MODEL_ID`、`OPENAI_API_KEY` 和 `BASE_URL` 创建 OpenAI-compatible 聊天模型。
-2. `_openai_tools()` 把课程使用的 `name / description / input_schema` 转成 OpenAI function schema。
-3. `llm.bind_tools(openai_tools)` 把 `bash` 的 schema 绑定给模型。绑定只表示“允许模型请求这个工具”，不会自动执行命令。
-4. `_to_langchain_messages()` 把课程消息转换为 `SystemMessage`、`HumanMessage`、`AIMessage` 和 `ToolMessage`。
-5. `runnable.invoke(request)` 发起一次模型调用；返回的 `AIMessage.tool_calls` 再被转换成课程循环读取的 `ToolUseBlock`。
-6. `usage_metadata` 被整理为 `Usage`，供后续章节做预算、恢复和 Goal 统计。
-
-这里最重要的协议约束是 `tool_call_id`：模型产生的调用 ID 会进入 `ToolUseBlock.id`，执行结果必须用同一个 ID 构造 `ToolMessage`。如果 ID 丢失，模型就无法判断结果属于哪次调用。
-
-### 手写循环与 LangChain Agent 的对应关系
-
-| 本章代码 | LangChain / LangGraph 中的抽象 |
-|---|---|
-| `messages` 列表 | Agent state 中的 `messages` 通道 |
-| `client.messages.create()` | 模型节点（model node） |
-| 查找 `tool_use` | 根据 `AIMessage.tool_calls` 进行条件路由 |
-| `run_bash()` | 工具执行节点 |
-| 追加 `tool_result` 后继续 | 从工具节点回到模型节点 |
-| 没有工具调用时 `return` | 路由到 `END` |
-
-`create_agent()` 会提供同一种“模型 → 工具 → 模型”的循环，并运行在 LangGraph 之上。本章保留显式 `while True`，因此消息何时追加、工具何时执行、何时退出都能在一个函数里观察到。若改写成 `StateGraph`，通常会建立 `model` 与 `tools` 两个节点，再用条件边判断继续还是结束；语义没有变化，只是状态、流式输出和持久化交给图运行时管理。
-
-### 阅读和调试建议
-
-- 在 `_MessagesAPI.create()` 后观察 `raw.tool_calls`，确认提供商返回了标准工具调用。
-- 在 `agent_loop()` 中观察 `messages[-2:]`，理解 `AIMessage` 与 `ToolMessage` 必须成对出现。
-- 尝试让模型一次请求两个命令。本章会按列表顺序串行执行，说明“模型可生成并行工具调用”不等于“宿主已经并行调度”。
-- 不要把 `stop_reason` 当作唯一依据；本项目最终以是否真实存在 `tool_use` 内容块决定是否继续。
-
-官方概念：[Models 与 `bind_tools`](https://docs.langchain.com/oss/python/langchain/models) · [Tools](https://docs.langchain.com/oss/python/langchain/tools) · [LangGraph 概览](https://docs.langchain.com/oss/python/langgraph/overview)
+官方文档：[Agents 与 `create_agent`](https://docs.langchain.com/oss/python/langchain/agents) · [Streaming](https://docs.langchain.com/oss/python/langchain/streaming) · [Tools](https://docs.langchain.com/oss/python/langchain/tools)
 
 ---
 

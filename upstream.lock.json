@@ -119,37 +119,7 @@
         }
       ],
       "s16_workflow_runtime": [],
-      "s17_goal_loop": [],
-      "legacy/s10_system_prompt": [
-        {
-          "path": "s10_system_prompt/README.md",
-          "sha256": "c06dbed5d8a55bddfa249d8884baaa11bac63263988860670bc60688a2769d65"
-        }
-      ],
-      "legacy/s11_error_recovery": [
-        {
-          "path": "s11_error_recovery/README.md",
-          "sha256": "1506b60eb7baec7141aa84f65adbcce2fbd2071c9ddf54f6189fe3c8f11d66f1"
-        }
-      ],
-      "legacy/s16_team_protocols": [
-        {
-          "path": "s16_team_protocols/README.md",
-          "sha256": "5f410587298c67c693b42668cbda6494c1de5564a8ec2743487e4ece0a9a367b"
-        }
-      ],
-      "legacy/s17_autonomous_agents": [
-        {
-          "path": "s17_autonomous_agents/README.md",
-          "sha256": "ec9794f8fd384b3a8b478a9ebeba878a0700b9c8b3b8645067b8bfa08ca72652"
-        }
-      ],
-      "legacy/s18_worktree_isolation": [
-        {
-          "path": "s18_worktree_isolation/README.md",
-          "sha256": "1c15e88ac8bc065dabebc51bbba8b321a2f85681659462115f5bf9ac0cf8f911"
-        }
-      ]
+      "s17_goal_loop": []
     }
   },
   "structure_reference": {

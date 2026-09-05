@@ -12,7 +12,6 @@ ROOT = Path(__file__).resolve().parents[1]
 LESSONS = tuple(
     ROOT / chapter / "code.py"
     for chapter in (
-        "s01_agent_loop",
         "s02_tool_use",
         "s03_permission",
         "s04_hooks",
@@ -30,7 +29,7 @@ LESSONS = tuple(
 )
 INTEGRATED_LESSON = ROOT / "s15_integrated_harness" / "code.py"
 GOAL_LESSON = ROOT / "s17_goal_loop" / "code.py"
-GLOB_LESSONS = (*LESSONS[1:], INTEGRATED_LESSON, GOAL_LESSON)
+GLOB_LESSONS = (*LESSONS, INTEGRATED_LESSON, GOAL_LESSON)
 
 
 class FakeMessagesApi:

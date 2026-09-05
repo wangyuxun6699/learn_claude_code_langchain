@@ -35,7 +35,9 @@ def test_chapter_documentation_is_chinese_only() -> None:
         assert not (chapter / "README.ja.md").exists()
         assert not (chapter / "README.en.md").exists()
         text = (chapter / "README.md").read_text(encoding="utf-8")
-        assert "<!-- local-langchain-additions:start -->" in text
+        assert "<!-- local-langchain-additions:start -->" not in text
+        assert "## 结合" in text
+        assert "https://docs.langchain.com/" in text
         assert "深入 CC 源码" in text or "深入 Claude Code 源码" in text
 
 
@@ -50,7 +52,7 @@ def test_uncommented_sources_have_the_same_python_ast() -> None:
         ), chapter.name
 
 
-@pytest.mark.parametrize("chapter", CHAPTERS[:15], ids=lambda path: path.name)
+@pytest.mark.parametrize("chapter", CHAPTERS[1:15], ids=lambda path: path.name)
 def test_langchain_message_adapter_preserves_tool_protocol(monkeypatch, tmp_path, chapter) -> None:
     langchain_messages = load_lesson(tmp_path, chapter / "code.py")
     calls: dict = {}
@@ -158,11 +160,14 @@ def test_cc_source_blocks_match_the_pinned_originals() -> None:
 
 
 @pytest.mark.parametrize("chapter", ["s13_agent_teams", "s15_integrated_harness", "s16_workflow_runtime"])
-def test_readme_merge_keeps_all_original_blocks_or_an_empty_section(chapter) -> None:
+def test_readme_merge_keeps_integrated_guide_and_source_section(chapter) -> None:
     local = (ROOT / chapter / "README.md").read_text(encoding="utf-8")
     section = local.split(START, 1)[1].split(END, 1)[0]
+    guide = local.split("## 结合", 1)[1].split("\n## ", 1)[0]
     result = merge("# Updated lesson\n\nNew teaching content.\n", local, chapter)
     assert result.split(START, 1)[1].split(END, 1)[0] == section
+    assert guide in result
+    assert "<!-- local-langchain-additions:start -->" not in result
     assert result.count(START) == result.count(END) == 1
 
 

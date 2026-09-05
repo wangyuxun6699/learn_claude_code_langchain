@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""合并上游中文章节 README，并保留已同步的源码原文区（包括空区）。"""
+"""合并上游中文章节 README，并保留本地代码导读与源码原文区。"""
 from __future__ import annotations
 
 import argparse
@@ -13,8 +13,6 @@ DEEP_SUMMARIES = (
     "<summary>深入 CC 源码</summary>",
     "<summary>深入 Claude Code 源码</summary>",
 )
-LOCAL_START = "<!-- local-langchain-additions:start -->"
-LOCAL_END = "<!-- local-langchain-additions:end -->"
 SOURCE_START = "<!-- upstream-cc-source:start -->"
 SOURCE_END = "<!-- upstream-cc-source:end -->"
 
@@ -43,26 +41,25 @@ def extract_deep_details(text: str) -> str:
     raise ValueError("深入源码 details 块没有闭合")
 
 
-def extract_local_additions(text: str, deep: str) -> str:
-    """读取已标记的本地补充；首次合并时完整保留原 README 的其余内容。"""
-    start = text.find(LOCAL_START)
-    end = text.find(LOCAL_END)
-    if start >= 0 and end > start:
-        return text[start + len(LOCAL_START) : end].strip()
-
-    original = text.replace(deep, "", 1).strip() if deep else text.strip()
-    if not original:
+def extract_integrated_guide(text: str) -> str:
+    """提取以“结合...”开头的本地代码与 LangChain/LangGraph 导读。"""
+    match = re.search(r"^## 结合[^\n]*$", text, flags=re.M)
+    if not match:
         return ""
-    return "\n".join(
-        [
-            "<details>",
-            "<summary>展开本仓库原有的 LangChain / LangGraph 教学说明</summary>",
-            "",
-            original,
-            "",
-            "</details>",
-        ]
-    )
+    next_heading = re.search(r"^## ", text[match.end() :], flags=re.M)
+    end = match.end() + next_heading.start() if next_heading else len(text)
+    return text[match.start() : end].strip()
+
+
+def insert_integrated_guide(text: str, guide: str) -> str:
+    """把本地导读放回运行示例之前；没有运行小节时追加到正文末尾。"""
+    if not guide:
+        return text
+    for heading in ("## 试一下", "## 跑起来看看", "## 接下来"):
+        marker = f"\n{heading}"
+        if marker in text:
+            return text.replace(marker, f"\n{guide}\n\n---\n\n{heading}", 1)
+    return f"{text.rstrip()}\n\n---\n\n{guide}"
 
 
 def adapt_setup(text: str) -> str:
@@ -80,49 +77,17 @@ def adapt_setup(text: str) -> str:
 
 def merge(upstream: str, local: str, chapter: str) -> str:
     canonical = adapt_setup(upstream).strip()
-    first_line, remainder = canonical.split("\n", 1)
-    note = (
-        f"> **对齐状态**：本章 `code.py` 对齐上游 `{chapter}`；"
-        "LangChain OpenAI-compatible 模型适配在章节代码中直接实现，"
-        "跨章复用保持上游结构。"
-    )
     source_section = ""
     if SOURCE_START in local:
         start = local.index(SOURCE_START)
         end = local.index(SOURCE_END, start) + len(SOURCE_END)
         source_section = local[start:end]
         local = local[:start] + local[end:]
-    deep = extract_deep_details(local)
-    local_additions = extract_local_additions(local, deep)
-    pieces = [first_line, "", note, remainder.strip()]
-    if local_additions:
-        pieces.extend(
-            [
-                "---",
-                "",
-                "## 本项目保留的 LangChain / LangGraph 教学补充",
-                "",
-                "> 以下内容来自本仓库对齐前的 README，作为上游课程之外的本地教学补充完整保留。",
-                "",
-                LOCAL_START,
-                local_additions,
-                LOCAL_END,
-            ]
-        )
+    del chapter  # 保留 CLI/API 兼容参数；章节名已包含在上游与本地内容中。
+    guide = extract_integrated_guide(local)
+    pieces = [insert_integrated_guide(canonical, guide)]
     if source_section:
         pieces.extend(["", source_section])
-    elif deep:
-        pieces.extend(
-            [
-                "---",
-                "",
-                "## 本项目保留的 Claude Code 源码补充",
-                "",
-                "> 以下内容来自本仓库原有 README，作为上游课程之外的源码研读补充。",
-                "",
-                deep,
-            ]
-        )
     return "\n".join(pieces).strip() + "\n"
 
 

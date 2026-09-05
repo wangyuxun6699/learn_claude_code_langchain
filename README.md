@@ -5,7 +5,7 @@
 
 框架选对了，代码量最多可以少一半。这个仓库基于 [LangChain](https://github.com/langchain-ai/langchain) 和 [LangGraph](https://github.com/langchain-ai/langgraph)，深入拆解 Claude Code 这类 coding agent 的 Harness。
 
-本项目已对齐 [shareAI-lab/learn-claude-code](https://github.com/shareAI-lab/learn-claude-code) 的 17 章源码结构（功能同步基线：`08263f49b3d5c895ea61d56a3737d8eebe624f20`；本次结构核对：main `0dcafa2ae053a1ddd6a72f265431104b08a5aa13`）。章节中的 Agent Loop、工具协议、Hook、Context、Task、Team、Workflow 与 Goal 实现保留上游结构；**LangChain 1.x + OpenAI-compatible ChatModel** 消息适配直接写在各章 `code.py` 内，Windows 文件锁和 Bash 子进程兼容实现也放在使用它们的章节中。
+本项目已对齐 [shareAI-lab/learn-claude-code](https://github.com/shareAI-lab/learn-claude-code) 的 17 章源码结构（功能同步基线：`08263f49b3d5c895ea61d56a3737d8eebe624f20`；本次结构核对：main `0dcafa2ae053a1ddd6a72f265431104b08a5aa13`）。章节中的 Agent Loop、工具协议、Hook、Context、Task、Team、Workflow 与 Goal 实现保留上游结构；s01 使用 LangChain `create_agent` 展示框架提供的最小 Agent，后续章节再逐步展开 Harness 机制。
 
 > Agency 来自模型，Agent 产品 = 模型 + Harness。
 
@@ -13,39 +13,30 @@
 
 ## 核心模式
 
-本仓库保留参考实现最重要的显式模型/工具循环。`LangChainMessagesClient` 只负责消息格式和工具 schema 转换，不隐藏循环：
+第一章用 LangChain `create_agent` 对齐参考实现的“一个 Bash 工具 + 一个 Agent Loop”，并通过 `stream` 实时输出模型 token：
 
 ```python
-def agent_loop(messages):
-    while True:
-        response = client.messages.create(
-            model=MODEL,
-            system=SYSTEM,
-            messages=messages,
-            tools=TOOLS,
-            max_tokens=8000,
-        )
-        messages.append({"role": "assistant", "content": response.content})
+@tool
+def bash(command: str) -> str:
+    """Run a shell command in the current working directory."""
+    result = subprocess.run(command, shell=True, capture_output=True, text=True)
+    return (result.stdout + result.stderr).strip() or "(no output)"
 
-        tool_calls = [
-            block for block in response.content
-            if block.type == "tool_use"
-        ]
-        if not tool_calls:
-            return
 
-        results = []
-        for block in tool_calls:
-            output = TOOL_HANDLERS[block.name](**block.input)
-            results.append({
-                "type": "tool_result",
-                "tool_use_id": block.id,
-                "content": output,
-            })
-        messages.append({"role": "user", "content": results})
+agent = create_agent(model=model, tools=[bash], system_prompt=SYSTEM)
+
+for chunk in agent.stream(
+    {"messages": messages},
+    stream_mode=["messages", "values"],
+    version="v2",
+):
+    if chunk["type"] == "messages":
+        token, metadata = chunk["data"]
+        if metadata.get("langgraph_node") == "model" and token.text:
+            print(token.text, end="", flush=True)
 ```
 
-模型输出 `tool_use` 内容块时，Harness 执行工具并追加 `tool_result`，然后再次调用模型；没有真实工具调用块时，本轮结束。适配层内部再把它们映射为 LangChain 的 `AIMessage` / `ToolMessage`。后续章节围绕这段闭环加入权限、Hook、Context、持久化和协作机制。
+`create_agent` 在 LangGraph 上自动完成“模型 → 工具 → 模型”的循环；`messages` stream 输出 token，`values` stream 提供最终状态并用于保留多轮会话历史。完整讲解和代码片段见 [s01 Agent Loop](s01_agent_loop/)。
 
 ### Agency 从哪来
 
@@ -257,11 +248,11 @@ Claude Code = 一个 agent loop
 
 ## 上游对齐与章节继承关系
 
-课程的阅读顺序是 s01 → s17。下表的“代码基线”表示教学机制的演进关系，**不是 Python 的类继承或跨章 import**。s01–s14 在各自文件内直接实现本章需要的模型适配、工具、权限和循环；s17 也独立实现。与上游 main 一致，s15 通过文件加载复用 s09 的 Memory，s16 通过文件加载复用 s15 宿主，s15 不反向依赖 s16。
+课程的阅读顺序是 s01 → s17。下表的“代码基线”表示教学机制的演进关系，**不是 Python 的类继承或跨章 import**。s01 用 `create_agent` 建立最小智能体，s02–s14 在各自文件内展开本章需要的模型适配、工具、权限和循环；s17 也独立实现。与上游 main 一致，s15 通过文件加载复用 s09 的 Memory，s16 通过文件加载复用 s15 宿主，s15 不反向依赖 s16。
 
 | 章节 | 代码基线 | 本章加入或组合的机制 |
 |---|---|---|
-| s01 | 最小内核 | 显式 Agent Loop + Bash |
+| s01 | 最小内核 | `create_agent` + Bash + stream |
 | s02 | s01 | 多工具与 dispatch map，循环不变 |
 | s03 | s02 | 三段式权限检查 |
 | s04 | s03 | 把权限与扩展逻辑移入 Hook |
