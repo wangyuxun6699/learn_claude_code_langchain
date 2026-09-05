@@ -4,7 +4,6 @@
 
 > 一个 Agent 负责统筹，一个 Agent 负责执行；通过显式状态和工具调用完成控制权交接。
 
-本章参考 [`shareAI-lab/learn-claude-code/s13_agent_teams`](https://github.com/shareAI-lab/learn-claude-code/tree/main/s13_agent_teams)，使用本项目锁定的 **LangChain 1.3.11 + LangGraph 1.2.7** 重新实现 Agent Teams 的核心概念。
 
 参考仓库用“队友线程 + 文件收件箱”模拟真实 Claude Code 的异步团队；本章代码采用另一条更贴近 LangChain/LangGraph 的路线：用两个 `create_agent` 子图分别表示 Lead 和 Teammate，再由父级 `StateGraph` 和 `Command` 完成顺序 handoff。
 

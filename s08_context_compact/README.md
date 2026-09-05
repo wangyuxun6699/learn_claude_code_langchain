@@ -1,6 +1,5 @@
 # s08: Context Compact — 上下文永远装得下
 
-> LangChain 教学改编版。章节结构与“深入 CC 源码”部分主要参考 [shareAI-lab/learn-claude-code](https://github.com/shareAI-lab/learn-claude-code)。
 >
 > **Harness 层**：上下文工程——裁剪、持久化、摘要与响应式恢复。
 

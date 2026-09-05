@@ -1,6 +1,5 @@
 # s05: TodoWrite — 让 Agent 知道自己做到哪了
 
-> LangChain 教学改编版。章节结构与“深入 CC 源码”部分主要参考 [shareAI-lab/learn-claude-code](https://github.com/shareAI-lab/learn-claude-code)。
 >
 > **Harness 层**：任务内计划 — 可见、可更新的 Todo 状态。
 

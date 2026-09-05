@@ -1,7 +1,5 @@
 # s15: Integrated Harness — 很多机制，一个循环
 
-> LangChain / LangGraph 教学改编版。章节结构参考
-> [shareAI-lab/learn-claude-code 的 s15](https://github.com/shareAI-lab/learn-claude-code/blob/main/s15_integrated_harness/README.md)。
 >
 > *"Many mechanisms, one loop"* — 工具、权限、记忆、任务、团队、插件全部挂在同一条循环上。
 >

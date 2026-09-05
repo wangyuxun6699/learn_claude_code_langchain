@@ -1,6 +1,5 @@
 # s07: Skill Loading — 按需加载专业知识
 
-> LangChain 教学改编版。章节结构与“深入 CC 源码”部分主要参考 [shareAI-lab/learn-claude-code](https://github.com/shareAI-lab/learn-claude-code)。
 >
 > **Harness 层**：渐进式披露 — 目录常驻、正文按需载入。
 

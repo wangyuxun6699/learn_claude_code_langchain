@@ -1,8 +1,6 @@
 # s16: Workflow Runtime — 编排固定时写进代码
 
-> LangChain / LangGraph 教学改编版。章节结构参考
-> [shareAI-lab/learn-claude-code 的 s16](https://github.com/shareAI-lab/learn-claude-code/blob/main/s16_workflow_runtime/README.md)。
->
+
 > *"One tool_use runs an entire orchestration"* — `Workflow` 工具启动一个可恢复的脚本 runtime，协调多次 agent 调用。
 >
 > **Harness 层**：编排 — 在单 agent 循环之上运行保存好的多 agent 脚本。

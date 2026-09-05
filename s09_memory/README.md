@@ -1,6 +1,5 @@
 # s09: Memory — 跨会话记住重要的事
 
-> LangChain 教学改编版。章节结构与“深入 CC 源码”部分主要参考 [shareAI-lab/learn-claude-code](https://github.com/shareAI-lab/learn-claude-code)。
 >
 > **Harness 层**：长期记忆 — 检索、注入、抽取与 Markdown 持久化。
 

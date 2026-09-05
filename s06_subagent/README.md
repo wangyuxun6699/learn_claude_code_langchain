@@ -1,6 +1,5 @@
 # s06: Subagent — 分而治之
 
-> LangChain 教学改编版。章节结构与“深入 CC 源码”部分主要参考 [shareAI-lab/learn-claude-code](https://github.com/shareAI-lab/learn-claude-code)。
 >
 > **Harness 层**：上下文隔离 — 父 Agent 委派，子 Agent 独立执行。
 

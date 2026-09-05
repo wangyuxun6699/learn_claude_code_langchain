@@ -4,7 +4,6 @@
 
 > 按时间表生产工作，让调度与执行解耦。
 
-本章参考 [`shareAI-lab/learn-claude-code/s12_cron_scheduler`](https://github.com/shareAI-lab/learn-claude-code/tree/main/s12_cron_scheduler)，使用 **LangChain 1.x + LangGraph** 重新实现同一组 Cron Scheduler 概念。参考仓库直接维护 Anthropic 消息和工具循环；本项目复用 s11 的 `create_agent`、后台任务 middleware 与工具集合，把重点放在定时调度、队列交付和持久化边界上。
 
 ## 问题
 

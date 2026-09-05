@@ -1,6 +1,5 @@
 # s10：Task System — 目标太大，拆成小任务
 
-> LangChain / LangGraph 教学改编版。章节结构、任务字段和依赖语义参考 [shareAI-lab/learn-claude-code](https://github.com/shareAI-lab/learn-claude-code) 的 [s10_task_system](https://github.com/shareAI-lab/learn-claude-code/tree/main/s10_task_system)。
 >
 > **Harness 层**：把大目标拆成可持久化、可认领、带依赖关系的小任务。
 

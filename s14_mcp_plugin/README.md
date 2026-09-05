@@ -1,7 +1,5 @@
 # s14: MCP & Plugin — 把外部工具接进同一个工具池
 
-> LangChain / LangGraph 教学改编版。章节结构参考
-> [shareAI-lab/learn-claude-code 的 s14](https://github.com/shareAI-lab/learn-claude-code/blob/main/s14_mcp_plugin/README.md)。
 >
 > **Harness 层**：MCP Tools — 连接服务、发现工具，并把它们加进 agent 循环。
 

@@ -1,7 +1,5 @@
 # s17: Goal Loop — 目标决定循环何时真正结束
 
-> LangChain / LangGraph 教学改编版。章节结构参考
-> [shareAI-lab/learn-claude-code 的 s17](https://github.com/shareAI-lab/learn-claude-code/blob/main/s17_goal_loop/README.md)。
 >
 > *"模型不再调用工具只说明这一轮想停；一个独立的评估器决定整个目标是否完成。"*
 >
