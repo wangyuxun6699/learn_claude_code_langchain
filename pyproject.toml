@@ -31,20 +31,7 @@ extend-exclude = ["venv", ".git", "__pycache__"]
 select = ["E", "F", "I", "UP", "B"]
 ignore = ["E501"]
 
-[tool.ruff.lint.per-file-ignores]
-# 该文件按上游的逐章循环式测试组织；闭包会在本轮 subTest 内立即执行。
-"tests/test_agent_teams_runtime.py" = ["B023"]
-
 [tool.pytest.ini_options]
-# s05-s17 are pinned to the restored teaching baseline.  The other test files
-# target later experimental APIs and remain available for explicit migration
-# runs, but they are not part of the default baseline suite.
-testpaths = [
-    "tests/test_s01_create_agent.py",
-    "tests/test_s02_create_agent.py",
-    "tests/test_s04_hooks.py",
-    "tests/test_smoke.py",
-    "tests/test_chapter_startup.py",
-]
+testpaths = ["tests"]
 addopts = "-q"
 pythonpath = ["."]

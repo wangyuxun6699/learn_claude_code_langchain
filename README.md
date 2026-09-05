@@ -284,7 +284,6 @@ Claude Code = 一个 agent loop
 | s14 MCP | s19 MCP |
 | s15 Integrated Harness | s20 没有源码研读块，留空 |
 | s16 Workflow / s17 Goal | 指定版本没有这两章，留空 |
-| legacy 中的旧章节 | 各自同名旧章节 |
 
 同步原文使用 `python scripts/sync_cc_source_readmes.py <指定提交的上游目录>`。[`scripts/merge_chapter_readmes.py`](scripts/merge_chapter_readmes.py) 更新正文时会保留该原文区，包括没有原文的空区。
 
@@ -417,11 +416,11 @@ OPENAI_API_KEY=your-api-key
 BASE_URL=https://your-openai-compatible-endpoint/v1
 ```
 
-如果使用备用模型，再设置 `FALLBACK_MODEL_ID`。不要提交真实 `.env`。
+不要提交真实 `.env`。
 
 ### 安全边界
 
-`run_bash` 的 `shell=True` 仅为教学演示：它把模型输出直接交给 shell，**黑名单 / 路径检查不等于安全边界**。为保持与上游逐章源码的对应关系，每章在本章文件内保留相应权限和路径逻辑；[`harness/security.py`](harness/security.py) 与 [`harness/paths.py`](harness/paths.py) 则供本仓库公共工具和独立测试使用。生产环境请改用默认拒绝的权限中间件 + 沙箱 / 容器。
+`run_bash` 的 `shell=True` 仅为教学演示：它把模型输出直接交给 shell，**黑名单 / 路径检查不等于安全边界**。为保持与上游逐章源码的对应关系，每章在本章文件内保留相应权限和路径逻辑。生产环境请改用默认拒绝的权限中间件 + 沙箱 / 容器。
 
 ### 测试与 CI
 
@@ -431,7 +430,7 @@ python -m pytest -q                  # 当前恢复基线、全库语法和 17 �
 ruff check tests scripts             # lint 测试与维护脚本
 ```
 
-CI（[.github/workflows/ci.yml](.github/workflows/ci.yml)）在 Python 3.11 / 3.13 执行同样两步：`py_compile` 验证全部源码语法，并给每章注入无效测试配置后启动、立即退出，确认导入与 CLI 初始化不需要真实 API key 或网络。`tests/` 中面向恢复基线之后 API 的演进测试仍保留，可在后续迁移对应章节时显式运行。
+CI（[.github/workflows/ci.yml](.github/workflows/ci.yml)）在 Python 3.11 / 3.13 执行同样两步：`py_compile` 验证全部源码语法，并给每章注入无效测试配置后启动、立即退出，确认导入与 CLI 初始化不需要真实 API key 或网络。
 
 ## 全部章节
 
@@ -454,8 +453,6 @@ CI（[.github/workflows/ci.yml](.github/workflows/ci.yml)）在 Python 3.11 / 3.
 | 15 | [s15: Integrated Harness](s15_integrated_harness/) | 多机制合一 + 通知注入 | ✅ 已实现 |
 | 16 | [s16: Workflow Runtime](s16_workflow_runtime/) | 固定编排 + journal 续跑 | ✅ 已实现 |
 | 17 | [s17: Goal Loop](s17_goal_loop/) | 独立评估器决定停止 | ✅ 已实现 |
-
-> 旧 20 章中不再单独成章的 s10 System Prompt、s11 Error Recovery，以及并入 s13 的 s16-s18 团队章节，已原样归档到 [legacy/](legacy/)。
 
 ## 目录约定
 
@@ -488,10 +485,8 @@ learn_claude_code/
 │   ├── code_uncommented.py  # 无注释速读版
 │   ├── images/
 │   └── README.md
-├── legacy/                  # 20 章旧编排中移除/合并的章节（存档）
 ├── skills/                  # s07 可扫描的示例 Skills
-├── harness/                 # 历史公共工具与兼容测试；章节代码不依赖此包
-├── tests/                   # harness 单测 + 全库 py_compile 冒烟
+├── tests/                   # 当前基线单测 + 全库 py_compile + 逐章启动检查
 ├── pyproject.toml           # min Python 3.11 + ruff + pytest 配置
 ├── requirements-dev.txt     # pytest + ruff
 ├── .github/workflows/ci.yml

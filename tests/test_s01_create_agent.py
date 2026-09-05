@@ -1,5 +1,5 @@
 from langchain.messages import AIMessage, AIMessageChunk, HumanMessage
-from test_agent_loop_boundaries import ROOT, load_lesson
+from lesson_loader import ROOT, load_lesson
 
 
 def test_s01_builds_and_reuses_create_agent(monkeypatch, tmp_path):

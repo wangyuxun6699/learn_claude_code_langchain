@@ -417,6 +417,6 @@ python -c "import s13_agent_teams.code as c; print(type(c.team_graph).__name__)"
 
 ## 接下来
 
-s13 已经能在 Lead 和 Teammate 之间交接控制权。新版 17 章编排中，旧版的 s16 Team Protocols、s17 Autonomous Agents、s18 Worktree Isolation 已并入本章，对应材料见 [legacy](../legacy/)。
+s13 已经能在 Lead 和 Teammate 之间交接控制权。新版 17 章编排把团队协议、自主 Agent 和 Worktree 隔离统一归入本章。
 
 [s14: MCP & Plugin](../s14_mcp_plugin/) 将把外部工具接入同一个工具池。

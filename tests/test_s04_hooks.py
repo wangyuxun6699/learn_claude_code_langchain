@@ -1,8 +1,7 @@
 from types import SimpleNamespace
 
 from langchain.messages import AIMessage, ToolMessage
-from test_agent_loop_boundaries import load_lesson
-from test_alignment import ROOT
+from lesson_loader import ROOT, load_lesson
 
 
 def middleware_request(name: str, args: dict, call_id: str = "call_1"):

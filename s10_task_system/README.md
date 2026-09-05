@@ -212,7 +212,7 @@ in_progress ──complete_task──→ completed
 | 任务状态机 | 无 | pending → in_progress → completed |
 | Agent 循环 | `create_agent` / LangGraph | 仍由 `create_agent` / LangGraph 负责 |
 
-为了突出本章机制，代码没有复制已归档的 s11 Error Recovery 的完整 `ErrorRecoveryMiddleware`。任务持久化和模型错误恢复是独立层：实际项目中可以把本章五个任务工具加入 legacy/s11_error_recovery 的 `TOOLS`，两层可以直接组合。
+为了突出本章机制，代码不包含完整的模型错误恢复中间件。任务持久化和模型错误恢复是独立层：实际项目中可以把本章五个任务工具加入带错误恢复能力的工具池，两层可以直接组合。
 
 ---
 

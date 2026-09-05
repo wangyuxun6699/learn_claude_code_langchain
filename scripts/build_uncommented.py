@@ -32,12 +32,6 @@ def main() -> None:
     if len(chapters) != 17:
         raise RuntimeError(f"应有 17 个章节，实际发现 {len(chapters)} 个")
 
-    # 同步已有速读版且本次展开了公共依赖的存档章节。
-    chapters.extend(
-        ROOT / "legacy" / name
-        for name in ("s10_system_prompt", "s11_error_recovery")
-    )
-
     for chapter in chapters:
         source_path = chapter / "code.py"
         target_path = chapter / "code_uncommented.py"

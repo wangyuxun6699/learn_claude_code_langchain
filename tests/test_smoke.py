@@ -16,8 +16,8 @@ def _source_files():
         yield p
 
 
-def test_all_source_files_compile():
+def test_all_source_files_compile(tmp_path):
     files = list(_source_files())
     assert files, "no source files found"
-    for p in files:
-        py_compile.compile(str(p), doraise=True)
+    for index, p in enumerate(files):
+        py_compile.compile(str(p), cfile=str(tmp_path / f"{index}.pyc"), doraise=True)
