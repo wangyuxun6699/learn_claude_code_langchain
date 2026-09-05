@@ -165,7 +165,6 @@ s02 Tool Use → 给它 5 个真正的工具，会发生什么？模型会不会
 <!-- upstream-cc-source:start -->
 ## 深入 CC 源码
 
-> 原文：[s01_agent_loop](https://github.com/shareAI-lab/learn-claude-code/blob/67a9126c6435a8654ba7a6f68c0fd2130f00a462/s01_agent_loop/README.md)。以下折叠块保持原文，文中的章号与源码行号沿用该版本。
 
 <details>
 <summary>深入 CC 源码</summary>
