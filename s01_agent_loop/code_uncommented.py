@@ -1,16 +1,5 @@
-"""s01_agent_loop.py - 用 LangChain ``create_agent`` 实现最小 Agent Loop。
-
-参考实现的核心能力保持不变：模型可以调用一个 bash 工具，并根据工具结果
-继续推理，直到给出最终回答。模型、工具调用和结果回传的循环由 LangChain 管理。
-
-Usage:
-    pip install -r requirements.txt
-    OPENAI_API_KEY=... BASE_URL=... MODEL_ID=... python s01_agent_loop/code.py
-"""
-
 import os
 import subprocess
-
 try:
     import readline
 
@@ -20,7 +9,6 @@ try:
     readline.parse_and_bind("set convert-meta off")
 except ImportError:
     pass
-
 from dotenv import load_dotenv
 from langchain.agents import create_agent
 from langchain.messages import AIMessageChunk
@@ -67,7 +55,6 @@ agent = None
 
 
 def get_agent():
-    """创建并复用 LangChain Agent。"""
     global agent
     if agent is None:
         model = ChatOpenAI(
