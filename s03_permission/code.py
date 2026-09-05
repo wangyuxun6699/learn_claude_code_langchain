@@ -1,512 +1,312 @@
 #!/usr/bin/env python3
-"""
-s03_permission.py - Permission System
+"""s03_permission.py - 用 middleware 在工具执行前完成权限审核。
 
-Three gates inserted before tool execution:
+本章完整保留 s02 的五个工具和 ``create_agent`` 循环，只新增三道权限闸门：
 
-    Gate 1: Hard deny list (rm -rf /, sudo, ...)
-    Gate 2: Rule matching (write outside workspace? destructive cmd?)
-    Gate 3: User approval (pause and wait for confirmation)
+1. 硬拒绝列表：危险命令直接拒绝；
+2. 规则匹配：识别工作区外访问和破坏性命令；
+3. 用户审批：规则命中后默认拒绝，只有明确确认才执行。
 
-    +----------+      +-------+      +--------------+      +---------------+
-    |   User   | ---> |  LLM  | ---> | Permission   | ---> | Tool Dispatch |
-    |  prompt  |      |       |      | 1. deny list |      | execute       |
-    +----------+      +---+---+      | 2. rules     |      +-------+-------+
-                          ^          | 3. approval  |              |
-                          |          +------+-------+              |
-                          |                 | deny                 |
-                          |                 v                      v
-                          |          +-------------------------------+
-                          +----------+ tool_result: denied or output |
-                                     +-------------------------------+
+``PermissionMiddleware`` 把权限管线包在所有工具调用外层。拒绝时返回合法的
+``ToolMessage``，因此模型仍能看到本次工具调用的结果并继续推理。
 
-Only one line added to the agent loop:
-
-    if not check_permission(block):
-        continue
-
-Builds on s02 (multi-tool). Usage:
-
-    python s03_permission/code.py
-    Needs: pip install -r requirements.txt + OPENAI_API_KEY / BASE_URL / MODEL_ID in .env
+Usage:
+    pip install -r requirements.txt
+    OPENAI_API_KEY=... BASE_URL=... MODEL_ID=... python s03_permission/code.py
 """
 
+import glob as glob_module
 import os
 import re
 import subprocess
 from pathlib import Path
+from threading import Lock
 
 try:
     import readline
-    readline.parse_and_bind('set bind-tty-special-chars off')
-    readline.parse_and_bind('set input-meta on')
-    readline.parse_and_bind('set output-meta on')
-    readline.parse_and_bind('set convert-meta off')
+
+    # 修复 macOS libedit 下中文退格等 UTF-8 输入问题。
+    readline.parse_and_bind("set bind-tty-special-chars off")
+    readline.parse_and_bind("set input-meta on")
+    readline.parse_and_bind("set output-meta on")
+    readline.parse_and_bind("set convert-meta off")
 except ImportError:
     pass
 
-# -- 本章内置的 LangChain 消息适配（直接展开，便于单文件阅读） --
-from dataclasses import dataclass, field
-from typing import Any
-
-from langchain_core.messages import (
-    AIMessage,
-    BaseMessage,
-    HumanMessage,
-    SystemMessage,
-    ToolMessage,
-)
+from dotenv import load_dotenv
+from langchain.agents import create_agent
+from langchain.agents.middleware import AgentMiddleware, ToolCallRequest
+from langchain.messages import AIMessageChunk, ToolMessage
+from langchain.tools import tool
 from langchain_openai import ChatOpenAI
 
-
-@dataclass(slots=True)
-class TextBlock:
-    """课程循环读取的文本内容块。"""
-
-    text: str
-    type: str = field(default="text", init=False)
-
-
-@dataclass(slots=True)
-class ToolUseBlock:
-    """课程循环读取的工具调用内容块。"""
-
-    id: str
-    name: str
-    input: dict[str, Any]
-    type: str = field(default="tool_use", init=False)
-
-
-@dataclass(slots=True)
-class Usage:
-    """统一暴露工作流和 Goal 统计所需的 token 字段。"""
-
-    input_tokens: int = 0
-    output_tokens: int = 0
-
-
-@dataclass(slots=True)
-class MessageResponse:
-    """课程侧需要的最小模型响应。"""
-
-    content: list[TextBlock | ToolUseBlock]
-    stop_reason: str
-    usage: Usage
-    raw: AIMessage
-
-
-def _value(value: Any, key: str, default: Any = None) -> Any:
-    if isinstance(value, dict):
-        return value.get(key, default)
-    return getattr(value, key, default)
-
-
-def _block_type(block: Any) -> str | None:
-    return _value(block, "type")
-
-
-def _text_content(content: Any) -> str:
-    """把 provider 内容块、工具结果或普通对象安全地转成文本。"""
-    if isinstance(content, str):
-        return content
-    if content is None:
-        return ""
-    if not isinstance(content, list):
-        return str(content)
-
-    texts: list[str] = []
-    for block in content:
-        if isinstance(block, str):
-            texts.append(block)
-            continue
-        block_text = _value(block, "text")
-        if isinstance(block_text, str):
-            texts.append(block_text)
-            continue
-        nested = _value(block, "content")
-        if nested is not None:
-            texts.append(_text_content(nested))
-    return "\n".join(text for text in texts if text)
-
-
-def _system_text(system: Any) -> str:
-    if isinstance(system, str):
-        return system
-    return _text_content(system)
-
-
-def _assistant_message(content: Any) -> AIMessage:
-    text_parts: list[str] = []
-    tool_calls: list[dict[str, Any]] = []
-    blocks = content if isinstance(content, list) else [content]
-
-    for block in blocks:
-        kind = _block_type(block)
-        if kind == "tool_use":
-            tool_calls.append(
-                {
-                    "id": str(_value(block, "id", "")),
-                    "name": str(_value(block, "name", "")),
-                    "args": dict(_value(block, "input", {}) or {}),
-                    "type": "tool_call",
-                }
-            )
-            continue
-        text = _value(block, "text")
-        if isinstance(text, str) and text:
-            text_parts.append(text)
-
-    return AIMessage(content="\n".join(text_parts), tool_calls=tool_calls)
-
-
-def _user_messages(content: Any) -> list[BaseMessage]:
-    if isinstance(content, str):
-        return [HumanMessage(content=content)]
-    if not isinstance(content, list):
-        return [HumanMessage(content=str(content))]
-
-    results: list[BaseMessage] = []
-    user_text: list[str] = []
-    for block in content:
-        if _block_type(block) == "tool_result":
-            if user_text:
-                results.append(HumanMessage(content="\n".join(user_text)))
-                user_text.clear()
-            results.append(
-                ToolMessage(
-                    content=_text_content(_value(block, "content", "")),
-                    tool_call_id=str(_value(block, "tool_use_id", "")),
-                    status="error" if bool(_value(block, "is_error", False)) else "success",
-                )
-            )
-            continue
-        text = _value(block, "text")
-        if isinstance(text, str):
-            user_text.append(text)
-        elif isinstance(block, str):
-            user_text.append(block)
-
-    if user_text or not results:
-        results.append(HumanMessage(content="\n".join(user_text)))
-    return results
-
-
-def _to_langchain_messages(messages: list[Any]) -> list[BaseMessage]:
-    converted: list[BaseMessage] = []
-    for message in messages:
-        if isinstance(message, BaseMessage):
-            converted.append(message)
-            continue
-        role = _value(message, "role")
-        content = _value(message, "content", "")
-        if role == "assistant":
-            converted.append(_assistant_message(content))
-        elif role == "system":
-            converted.append(SystemMessage(content=_text_content(content)))
-        else:
-            converted.extend(_user_messages(content))
-    return converted
-
-
-def _openai_tools(tools: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
-    converted: list[dict[str, Any]] = []
-    for item in tools or []:
-        converted.append(
-            {
-                "type": "function",
-                "function": {
-                    "name": item["name"],
-                    "description": item.get("description", ""),
-                    "parameters": item.get("input_schema", {"type": "object"}),
-                },
-            }
-        )
-    return converted
-
-
-def _response_blocks(message: AIMessage) -> list[TextBlock | ToolUseBlock]:
-    blocks: list[TextBlock | ToolUseBlock] = []
-    text = _text_content(message.content)
-    if text:
-        blocks.append(TextBlock(text=text))
-    for call in message.tool_calls:
-        blocks.append(
-            ToolUseBlock(
-                id=str(call.get("id", "")),
-                name=str(call.get("name", "")),
-                input=dict(call.get("args", {}) or {}),
-            )
-        )
-    return blocks
-
-
-def _usage(message: AIMessage) -> Usage:
-    metadata = message.usage_metadata or {}
-    return Usage(
-        input_tokens=int(metadata.get("input_tokens", 0) or 0),
-        output_tokens=int(metadata.get("output_tokens", 0) or 0),
-    )
-
-
-class _MessagesAPI:
-    def __init__(self, owner: "LangChainMessagesClient") -> None:
-        self.owner = owner
-
-    def create(
-        self,
-        *,
-        model: str,
-        messages: list[Any],
-        system: Any = "",
-        tools: list[dict[str, Any]] | None = None,
-        max_tokens: int = 8000,
-        temperature: float = 0,
-        **_: Any,
-    ) -> MessageResponse:
-        llm = ChatOpenAI(
-            model=model,
-            api_key=os.getenv("OPENAI_API_KEY"),
-            base_url=os.getenv("BASE_URL") or self.owner.base_url,
-            max_completion_tokens=max_tokens,
-            temperature=temperature,
-            timeout=self.owner.timeout,
-            max_retries=self.owner.max_retries,
-        )
-        openai_tools = _openai_tools(tools)
-        runnable = llm.bind_tools(openai_tools) if openai_tools else llm
-        request = [SystemMessage(content=_system_text(system))]
-        request.extend(_to_langchain_messages(messages))
-        raw = runnable.invoke(request)
-        if not isinstance(raw, AIMessage):
-            raw = AIMessage(content=str(getattr(raw, "content", raw)))
-
-        finish_reason = str((raw.response_metadata or {}).get("finish_reason", ""))
-        if raw.tool_calls:
-            stop_reason = "tool_use"
-        elif finish_reason in {"length", "max_tokens"}:
-            stop_reason = "max_tokens"
-        else:
-            stop_reason = "end_turn"
-        return MessageResponse(
-            content=_response_blocks(raw),
-            stop_reason=stop_reason,
-            usage=_usage(raw),
-            raw=raw,
-        )
-
-
-class LangChainMessagesClient:
-    """课程统一模型边界；真实网络调用延迟到 ``create``。"""
-
-    def __init__(
-        self,
-        *,
-        base_url: str | None = None,
-        timeout: int = 120,
-        max_retries: int = 2,
-        **_: Any,
-    ) -> None:
-        self.base_url = base_url
-        self.timeout = timeout
-        self.max_retries = max_retries
-        self.messages = _MessagesAPI(self)
-
-# -- 本章的 Agent / Harness 机制 --
-from dotenv import load_dotenv
-
 load_dotenv(override=True)
-WORKDIR = Path.cwd()
-client = LangChainMessagesClient(base_url=os.getenv("BASE_URL"))
-MODEL = os.environ["MODEL_ID"]
 
+WORKDIR = Path.cwd().resolve()
+MODEL = os.environ["MODEL_ID"]
 SYSTEM = f"You are a coding agent at {WORKDIR}. All destructive operations require user approval."
 
 
-# -- From s02: tool implementations --
+# -- From s02: five focused tools --
 
-def run_bash(command: str) -> str:
+
+def resolve_path(path: str) -> Path:
+    """把相对路径解析到工作目录；越界访问由权限 middleware 审核。"""
+    return (WORKDIR / path).resolve()
+
+
+def print_tool_result(name: str, detail: str, output: str) -> str:
+    """显示已获准的工具调用和结果预览，同时把完整结果返回给 Agent。"""
+    print(f"\n\033[33m> {name}({detail})\033[0m")
+    print(output[:200])
+    return output
+
+
+@tool
+def bash(command: str) -> str:
+    """Run a shell command in the workspace and return its combined output."""
     try:
-        r = subprocess.run(command, shell=True, cwd=WORKDIR,
-                           capture_output=True, text=True, errors="replace", timeout=120)
-        out = (r.stdout + r.stderr).strip()
-        return out[:50000] if out else "(no output)"
+        result = subprocess.run(
+            command,
+            shell=True,
+            cwd=WORKDIR,
+            capture_output=True,
+            text=True,
+            errors="replace",
+            timeout=120,
+        )
+        output = (result.stdout + result.stderr).strip()
+        output = output[:50000] if output else "(no output)"
     except subprocess.TimeoutExpired:
-        return "Error: Timeout (120s)"
+        output = "Error: Timeout (120s)"
+    except (FileNotFoundError, OSError) as error:
+        output = f"Error: {error}"
+
+    return print_tool_result("bash", command, output)
 
 
-def run_read(path: str, limit: int | None = None) -> str:
+@tool
+def read_file(path: str, limit: int | None = None) -> str:
+    """Read a UTF-8 text file, optionally limiting the number of returned lines."""
     try:
-        lines = (WORKDIR / path).resolve().read_text(encoding="utf-8").splitlines()
-        if limit and limit < len(lines):
-            lines = lines[:limit] + [f"... ({len(lines) - limit} more lines)"]
-        return "\n".join(lines)
-    except Exception as e:
-        return f"Error: {e}"
+        if limit is not None and limit < 1:
+            raise ValueError("limit must be a positive integer")
+        lines = resolve_path(path).read_text(encoding="utf-8").splitlines()
+        if limit is not None and limit < len(lines):
+            omitted = len(lines) - limit
+            lines = lines[:limit] + [f"... ({omitted} more lines)"]
+        output = "\n".join(lines)
+    except (OSError, UnicodeError, ValueError) as error:
+        output = f"Error: {error}"
+    return print_tool_result("read_file", path, output)
 
 
-def run_write(path: str, content: str) -> str:
+@tool
+def write_file(path: str, content: str) -> str:
+    """Write UTF-8 text to a file, replacing it and creating parent directories."""
     try:
-        file_path = (WORKDIR / path).resolve()
+        file_path = resolve_path(path)
         file_path.parent.mkdir(parents=True, exist_ok=True)
         file_path.write_text(content, encoding="utf-8", newline="")
-        return f"Wrote {len(content)} bytes to {path}"
-    except Exception as e:
-        return f"Error: {e}"
+        output = f"Wrote {len(content)} characters to {path}"
+    except (OSError, UnicodeError, ValueError) as error:
+        output = f"Error: {error}"
+    return print_tool_result("write_file", path, output)
 
 
-def run_edit(path: str, old_text: str, new_text: str) -> str:
+@tool
+def edit_file(path: str, old_text: str, new_text: str) -> str:
+    """Replace the first exact occurrence of old_text in a UTF-8 file."""
     try:
-        file_path = (WORKDIR / path).resolve()
+        file_path = resolve_path(path)
         text = file_path.read_text(encoding="utf-8")
         if old_text not in text:
-            return f"Error: text not found in {path}"
-        file_path.write_text(text.replace(old_text, new_text, 1), encoding="utf-8", newline="")
-        return f"Edited {path}"
-    except Exception as e:
-        return f"Error: {e}"
+            output = f"Error: text not found in {path}"
+        else:
+            file_path.write_text(
+                text.replace(old_text, new_text, 1),
+                encoding="utf-8",
+                newline="",
+            )
+            output = f"Edited {path}"
+    except (OSError, UnicodeError, ValueError) as error:
+        output = f"Error: {error}"
+    return print_tool_result("edit_file", path, output)
 
 
-def run_glob(pattern: str) -> str:
-    import glob as g
+@tool
+def glob(pattern: str) -> str:
+    """Find workspace files matching a glob pattern; use ** for recursive matching."""
     try:
-        matches = sorted({
-            Path(match).as_posix() for match in g.glob(
-                pattern, root_dir=WORKDIR, recursive=True)
-            if (WORKDIR / match).resolve().is_relative_to(WORKDIR)
-        })
-        shown = matches[:200]
+        matches = set()
+        for match in glob_module.glob(pattern, root_dir=WORKDIR, recursive=True):
+            resolved = (WORKDIR / match).resolve()
+            if resolved.is_relative_to(WORKDIR) and resolved.is_file():
+                matches.add(resolved.relative_to(WORKDIR).as_posix())
+        shown = sorted(matches)[:200]
         if len(matches) > 200:
             shown.append("... (more matches omitted; narrow the pattern)")
-        return "\n".join(shown) if shown else "(no matches)"
-    except Exception as e:
-        return f"Error: {e}"
+        output = "\n".join(shown) if shown else "(no matches)"
+    except (OSError, ValueError) as error:
+        output = f"Error: {error}"
+    return print_tool_result("glob", pattern, output)
 
 
-# -- From s02 (unchanged): tool definitions and dispatch --
-
-TOOLS = [
-    {"name": "bash", "description": "Run a shell command.",
-     "input_schema": {"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]}},
-    {"name": "read_file", "description": "Read file contents.",
-     "input_schema": {"type": "object", "properties": {"path": {"type": "string"}, "limit": {"type": "integer"}}, "required": ["path"]}},
-    {"name": "write_file", "description": "Write content to a file.",
-     "input_schema": {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}, "required": ["path", "content"]}},
-    {"name": "edit_file", "description": "Replace exact text in a file once.",
-     "input_schema": {"type": "object", "properties": {"path": {"type": "string"}, "old_text": {"type": "string"}, "new_text": {"type": "string"}}, "required": ["path", "old_text", "new_text"]}},
-    {"name": "glob", "description": "Find files matching a glob pattern; ** matches recursively.",
-     "input_schema": {"type": "object", "properties": {"pattern": {"type": "string"}}, "required": ["pattern"]}},
-]
-
-TOOL_HANDLERS = {
-    "bash": run_bash, "read_file": run_read, "write_file": run_write,
-    "edit_file": run_edit, "glob": run_glob,
-}
+TOOLS = [bash, read_file, write_file, edit_file, glob]
 
 
 # -- New in s03: three-gate permission pipeline --
 
-# Gate 1: Hard deny list - always forbidden
+
+# Gate 1: commands containing these fragments can never be approved.
 DENY_LIST = ["rm -rf /", "sudo", "shutdown", "reboot", "mkfs", "dd if=", "> /dev/sda"]
 
+
 def check_deny_list(command: str) -> str | None:
+    """返回硬拒绝原因；未命中时返回 ``None``。"""
+    normalized = command.lower()
     for pattern in DENY_LIST:
-        if pattern in command:
+        if pattern in normalized:
             return f"Blocked: '{pattern}' is on the deny list"
     return None
 
 
-# Gate 2: Rule matching - context-dependent checks
+# Gate 2: rules identify calls that require an explicit user decision.
 DESTRUCTIVE_COMMAND_WORD = re.compile(
     r"(?i)(?:^|[;&|()\n])\s*(?:rm|del)(?=\s|$|[;&|()])"
 )
 
 
 def contains_destructive_command(command: str) -> bool:
+    """识别位于命令段开头的 ``rm`` / ``del``，避免误判 model、delimiter。"""
     return bool(DESTRUCTIVE_COMMAND_WORD.search(command))
 
 
 PERMISSION_RULES = [
-    {"tools": ["read_file", "write_file", "edit_file"],
-     "check": lambda args: not (WORKDIR / args.get("path", "")).resolve().is_relative_to(WORKDIR),
-     "message": "Writing outside workspace"},
-    {"tools": ["bash"],
-     "check": lambda args: contains_destructive_command(args.get("command", "")) or
-     any(kw in args.get("command", "") for kw in ["rm ", "> /etc/", "chmod 777"]),
-     "message": "Potentially destructive command"},
+    {
+        "tools": ["read_file", "write_file", "edit_file"],
+        "check": lambda args: not resolve_path(args.get("path", "")).is_relative_to(WORKDIR),
+        "message": "Access outside workspace",
+    },
+    {
+        "tools": ["bash"],
+        "check": lambda args: contains_destructive_command(args.get("command", ""))
+        or any(
+            keyword in args.get("command", "").lower()
+            for keyword in ["rm ", "> /etc/", "chmod 777"]
+        ),
+        "message": "Potentially destructive command",
+    },
 ]
 
+
 def check_rules(tool_name: str, args: dict) -> str | None:
+    """返回第一条命中的审批规则原因；无需审批时返回 ``None``。"""
     for rule in PERMISSION_RULES:
         if tool_name in rule["tools"] and rule["check"](args):
             return rule["message"]
     return None
 
 
-# Gate 3: User approval - wait for confirmation after rule match
 def ask_user(tool_name: str, args: dict, reason: str) -> str:
+    """显示待审核调用；只有 y/yes 明确允许，其余输入均拒绝。"""
     print(f"\n\033[33m[permission] {reason}\033[0m")
     print(f"   Tool: {tool_name}({args})")
-    choice = input("   Allow? [y/N] ").strip().lower()
+    try:
+        choice = input("   Allow? [y/N] ").strip().lower()
+    except EOFError:
+        choice = ""
     return "allow" if choice in ("y", "yes") else "deny"
 
 
-# Pipeline: all three gates chained
-def check_permission(block) -> bool:
-    if block.name == "bash":
-        reason = check_deny_list(block.input.get("command", ""))
+# 同一轮的工具可能并发执行；锁保证多个审批提示不会争用终端输入。
+APPROVAL_LOCK = Lock()
+
+
+def check_permission(tool_name: str, args: dict) -> bool:
+    """依次执行硬拒绝、规则匹配和用户审批三道闸门。"""
+    if tool_name == "bash":
+        reason = check_deny_list(args.get("command", ""))
         if reason:
             print(f"\n\033[31m[blocked] {reason}\033[0m")
             return False
-    reason = check_rules(block.name, block.input)
+
+    reason = check_rules(tool_name, args)
     if reason:
-        decision = ask_user(block.name, block.input, reason)
-        if decision == "deny":
-            return False
+        with APPROVAL_LOCK:
+            return ask_user(tool_name, args, reason) == "allow"
     return True
 
 
-# -- Agent loop: same as s02, with check_permission() inserted --
+class PermissionMiddleware(AgentMiddleware):
+    """在 LangChain 分发每个工具调用前执行权限审核。"""
 
-def agent_loop(messages: list):
-    while True:
-        response = client.messages.create(
-            model=MODEL, system=SYSTEM, messages=messages,
-            tools=TOOLS, max_tokens=8000,
+    def wrap_tool_call(self, request: ToolCallRequest, handler):
+        tool_call = request.tool_call
+        tool_name = tool_call["name"]
+        args = tool_call.get("args", {})
+
+        if not check_permission(tool_name, args):
+            return ToolMessage(
+                content="Permission denied.",
+                tool_call_id=tool_call["id"],
+                name=tool_name,
+                status="error",
+            )
+        return handler(request)
+
+
+# 与 s02 一样延迟创建，导入模块时不连接模型。
+agent = None
+
+
+def get_agent():
+    """创建并复用带权限 middleware 的五工具 LangChain Agent。"""
+    global agent
+    if agent is None:
+        model = ChatOpenAI(
+            model=MODEL,
+            api_key=os.getenv("OPENAI_API_KEY"),
+            base_url=os.getenv("BASE_URL") or None,
+            max_completion_tokens=8000,
+            temperature=0,
         )
-        messages.append({"role": "assistant", "content": response.content})
+        agent = create_agent(
+            model=model,
+            tools=TOOLS,
+            system_prompt=SYSTEM,
+            middleware=[PermissionMiddleware()],
+        )
+    return agent
 
-        tool_calls = [
-            block for block in response.content if block.type == "tool_use"
-        ]
-        if not tool_calls:
-            return
 
-        results = []
-        for block in tool_calls:
-            print(f"\033[36m> {block.name}\033[0m")
+def agent_loop(messages: list) -> None:
+    """流式运行 Agent；工具调用会先经过 ``PermissionMiddleware``。"""
+    final_messages = messages
+    for chunk in get_agent().stream(
+        {"messages": messages},
+        stream_mode=["messages", "values"],
+        version="v2",
+    ):
+        if chunk["type"] == "messages":
+            token, metadata = chunk["data"]
+            if isinstance(token, AIMessageChunk) and metadata.get("langgraph_node") == "model" and token.text:
+                print(token.text, end="", flush=True)
+        elif chunk["type"] == "values":
+            final_messages = chunk["data"]["messages"]
 
-            # s03 change: run through permission pipeline before executing
-            if not check_permission(block):
-                results.append({"type": "tool_result", "tool_use_id": block.id,
-                                "content": "Permission denied."})
-                continue
-
-            handler = TOOL_HANDLERS.get(block.name)
-            output = handler(**block.input) if handler else f"Unknown: {block.name}"
-            print(str(output)[:200])
-            results.append({"type": "tool_result", "tool_use_id": block.id, "content": output})
-
-        messages.append({"role": "user", "content": results})
+    messages[:] = final_messages
+    print()
 
 
 if __name__ == "__main__":
-    print("s03: Permission")
+    print("s03: Permission (LangChain middleware)")
     print("Enter a question, press Enter to send. Type q to quit.\n")
 
     history = []
     while True:
         try:
-            # \001/\002 tell Readline the ANSI escapes have zero display width.
+            # \001/\002 告诉 Readline：ANSI 转义序列不占显示宽度。
             query = input("\001\033[36m\002s03 >> \001\033[0m\002")
         except (EOFError, KeyboardInterrupt):
             break
@@ -514,7 +314,4 @@ if __name__ == "__main__":
             break
         history.append({"role": "user", "content": query})
         agent_loop(history)
-        for block in history[-1]["content"]:
-            if getattr(block, "type", None) == "text":
-                print(block.text)
         print()

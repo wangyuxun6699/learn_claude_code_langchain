@@ -19,7 +19,7 @@ s02 的 Agent 有 5 个工具。file tools 受 `safe_path` 保护，但 bash 不
 
 ![Permission Overview](images/permission-overview.svg)
 
-s02 的循环完全保留。唯一的变动是在工具执行前插入 `check_permission()`。每个工具调用依次经过三道闸门：硬拒绝优先，软询问次之，都没命中就放行。
+s02 的 `create_agent()` 与流式循环完全保留。唯一的结构性变动是注册 `PermissionMiddleware`，由它在每个工具真正执行前调用 `check_permission()`。每个工具调用依次经过三道闸门：硬拒绝优先，软询问次之，都没命中就放行。
 
 三道闸门对应三种决策：
 
@@ -46,8 +46,9 @@ DENY_LIST = [
 ]
 
 def check_deny_list(command: str) -> str | None:
+    normalized = command.lower()
     for pattern in DENY_LIST:
-        if pattern in command:
+        if pattern in normalized:
             return f"Blocked: '{pattern}' is on the deny list"
     return None
 ```
@@ -67,13 +68,14 @@ def contains_destructive_command(command: str) -> bool:
 PERMISSION_RULES = [
     {
         "tools": ["read_file", "write_file", "edit_file"],
-        "check": lambda args: not (WORKDIR / args.get("path", "")).resolve().is_relative_to(WORKDIR),
+        "check": lambda args: not resolve_path(args.get("path", "")).is_relative_to(WORKDIR),
         "message": "Access outside workspace",
     },
     {
         "tools": ["bash"],
         "check": lambda args: contains_destructive_command(args.get("command", "")) or any(
-            kw in args.get("command", "") for kw in ["rm ", "> /etc/", "chmod 777"]
+            kw in args.get("command", "").lower()
+            for kw in ["rm ", "> /etc/", "chmod 777"]
         ),
         "message": "Potentially destructive command",
     },
@@ -96,34 +98,47 @@ def ask_user(tool_name: str, args: dict, reason: str) -> str:
     return "allow" if choice in ("y", "yes") else "deny"
 ```
 
-**三道闸门串在一起**，插在工具执行之前：
+**三道闸门串在一起**，由 middleware 插在工具执行之前：
 
 ```python
-def check_permission(block) -> bool:
+def check_permission(tool_name: str, args: dict) -> bool:
     # 闸门 1: 硬拒绝
-    if block.name == "bash":
-        reason = check_deny_list(block.input.get("command", ""))
+    if tool_name == "bash":
+        reason = check_deny_list(args.get("command", ""))
         if reason:
             print(f"\n⛔ {reason}")
             return False
 
     # 闸门 2 + 3: 规则匹配 → 用户审批
-    reason = check_rules(block.name, block.input)
+    reason = check_rules(tool_name, args)
     if reason:
-        decision = ask_user(block.name, block.input, reason)
+        decision = ask_user(tool_name, args, reason)
         if decision == "deny":
             return False
 
     return True
 
-# 在 agent_loop 中——s02 的循环只加了一行：
-for block in tool_calls:
-    if not check_permission(block):           # ← 新增
-        results.append({... "content": "Permission denied."})
-        continue
-    output = TOOL_HANDLERS[block.name](**block.input)  # s02 原有
-    results.append(...)
+class PermissionMiddleware(AgentMiddleware):
+    def wrap_tool_call(self, request: ToolCallRequest, handler):
+        tool_call = request.tool_call
+        if not check_permission(tool_call["name"], tool_call.get("args", {})):
+            return ToolMessage(
+                content="Permission denied.",
+                tool_call_id=tool_call["id"],
+                name=tool_call["name"],
+                status="error",
+            )
+        return handler(request)
+
+agent = create_agent(
+    model=model,
+    tools=TOOLS,
+    system_prompt=SYSTEM,
+    middleware=[PermissionMiddleware()],
+)
 ```
+
+`handler(request)` 是真正进入工具执行节点的边界：允许时调用它；拒绝时不调用，并直接构造与原调用 ID 配对的 `ToolMessage`。这样权限拒绝仍是一次完整的工具结果，不会破坏 `AIMessage.tool_calls → ToolMessage` 协议。
 
 ---
 
@@ -131,9 +146,10 @@ for block in tool_calls:
 
 | 组件 | 之前 (s02) | 之后 (s03) |
 |------|-----------|-----------|
-| 安全模型 | 无（信任模型） | 三道闸门权限管线 |
-| 新函数 | — | check_deny_list, check_rules, ask_user, check_permission |
-| 循环 | 直接执行所有工具 | 执行前插入 check_permission() |
+| 安全模型 | 文件工具仅由 `safe_path()` 硬限制 | deny / ask / allow 三道闸门 |
+| 新组件 | — | `PermissionMiddleware` + 四个权限函数 |
+| 工具执行 | `create_agent()` 直接分发 | `wrap_tool_call()` 审核后再调用 handler |
+| Agent Loop | `stream()` 消费事件 | 完全不变 |
 
 ---
 
@@ -145,7 +161,21 @@ for block in tool_calls:
 2. `check_rules()` 根据工具名和参数判断风险，例如工作区外路径或破坏性 shell 命令。
 3. `ask_user()` 只对需要确认的动作询问用户，默认答案是拒绝。
 
-`check_permission(block)` 位于 handler 调用之前。拒绝时仍然生成与原调用 ID 对应的 `tool_result`。权限拒绝也是一次合法的工具结果，而不是偷偷删除模型的调用，否则消息历史会出现“有 tool call、没有 ToolMessage”的协议断裂。
+`check_permission(tool_name, args)` 位于 handler 调用之前。拒绝时仍然生成与原调用 ID 对应的 `ToolMessage`。权限拒绝也是一次合法的工具结果，而不是偷偷删除模型的调用，否则消息历史会出现“有 tool call、没有 ToolMessage”的协议断裂。
+
+### LangChain 官方 middleware 模型
+
+LangChain 把 middleware 定义为 Agent 执行图上的扩展点。官方文档把 hook 分成两类：`before_agent`、`before_model` 等 node-style hook 在固定节点前后运行；`wrap_model_call` 与 `wrap_tool_call` 则包住一次具体调用。权限判断需要决定“是否真的执行这次工具”，所以本章选择 `wrap_tool_call`。
+
+`wrap_tool_call(request, handler)` 中两个参数的职责很清楚：
+
+- `request.tool_call` 提供工具名、参数和调用 ID，`request.tool`、`request.state`、`request.runtime` 还可用于更复杂的上下文策略。
+- `handler(request)` 继续执行工具并返回 `ToolMessage` 或 `Command`。middleware 可以在调用前审核，也可以在调用后记录结果；不调用 handler 就能短路本次执行。
+- 多个 middleware 可通过 `create_agent(..., middleware=[...])` 组合。本章只注册一个权限组件，让 s02 的工具声明和流式循环保持不变。
+
+本章使用阻塞式 `input()`，目的是用最少代码看清 allow / deny / ask 的控制点。`APPROVAL_LOCK` 会串行化同一轮中可能并发出现的多个审批提示，避免它们争用终端输入。
+
+官方资料：[Middleware overview](https://docs.langchain.com/oss/python/langchain/middleware/overview) · [Custom middleware](https://docs.langchain.com/oss/python/langchain/middleware/custom)
 
 ### 确定性规则和模型判断要分开
 
@@ -155,21 +185,20 @@ for block in tool_calls:
 
 | 本章实现 | LangChain / LangGraph 对应能力 | 差异 |
 |---|---|---|
-| `check_rules()` | `HumanInTheLoopMiddleware` 的策略匹配 | 本章规则直接写在 Python 中 |
+| `PermissionMiddleware.wrap_tool_call()` | 自定义 tool wrap hook | 都在单次工具调用边界控制是否执行 |
+| `check_rules()` | `HumanInTheLoopMiddleware` 的 `interrupt_on` 策略 | 本章规则可检查参数内容，直接写在 Python 中 |
 | `input("Allow?")` | LangGraph `interrupt()` | 本章阻塞进程，不保存图状态 |
-| `allow / deny` | HITL 的 `approve / reject` | 官方中间件还可编辑工具参数 |
-| 继续当前循环 | `Command(resume=...)` 恢复图 | 本章不能跨进程恢复 |
+| `allow / deny` | HITL 的 `approve / reject` | 官方中间件还支持 `edit` 工具参数 |
+| 当前进程继续执行 | `Command(resume=...)` 恢复图 | 本章不能跨进程恢复 |
 
-生产级 HITL 通常需要 checkpointer 和稳定的 `thread_id`：图在中断点保存 state，稍后通过 `Command(resume=...)` 恢复。当前 `code.py` 适合教学和本地 CLI，因为批准动作必须在同一进程中完成。
-
-仓库还提供 [`code_middleware.py`](code_middleware.py)，用 `create_agent()`、`@tool` 和 `AgentMiddleware` 表达相同思路。建议先理解 `code.py` 的执行顺序，再对照 middleware 版本如何把权限逻辑挂到标准 Agent 生命周期。
+LangChain 官方 `HumanInTheLoopMiddleware` 会在模型生成工具调用后、工具执行前触发 interrupt；配合 checkpointer 和稳定的 `thread_id` 保存图状态，之后用 `Command(resume=...)` 提交 `approve`、`edit` 或 `reject` 决策。本章的自定义 middleware 适合教学和本地 CLI，因为批准动作必须在同一进程中完成；需要跨进程恢复、Web 审批或参数编辑时，应切换到官方 HITL 组件。
 
 ### 本章应验证的边界
 
-- deny list 应按命令边界匹配，避免普通文本误判。
+- 本章 deny list 是便于观察控制流的简单字符串匹配；生产实现应解析命令边界并配合沙箱，避免漏判和误判。
 - 路径必须先 `resolve()` 再判断是否位于工作区。
 - 自动触发任务不能偷偷读取交互式 stdin；后续 cron 和后台章节会继续强化这一点。
-- hook 的“允许”不能绕过宿主硬拒绝策略。
+- 用户审批的“允许”不能绕过前置的硬拒绝策略。
 
 官方概念：[Human-in-the-loop](https://docs.langchain.com/oss/python/langchain/human-in-the-loop) · [LangGraph interrupts](https://docs.langchain.com/oss/python/langgraph/interrupts) · [Guardrails](https://docs.langchain.com/oss/python/langchain/guardrails)
 
@@ -196,15 +225,14 @@ python s03_permission/code.py
 
 ## 接下来
 
-当前权限检查每次都在循环里硬编码 `check_permission()`。如果我想在每次工具执行前后加日志？如果想在某些操作后自动触发 git commit？这些扩展逻辑散落在 loop 里，循环很快就会膨胀。
+本章用 `wrap_tool_call()` 隔离了权限审核，但 Agent 还可能需要模型调用前后的日志、提示词调整或会话级状态更新。
 
-s04 Hooks → 给循环加钩子，扩展逻辑挂在钩子上，循环保持干净。
+s04 Hooks → 继续理解更多执行阶段的钩子，以及不同扩展逻辑应该挂在哪个生命周期位置。
 ---
 
 <!-- upstream-cc-source:start -->
 ## 深入 CC 源码
 
-> 原文：[s03_permission](https://github.com/shareAI-lab/learn-claude-code/blob/67a9126c6435a8654ba7a6f68c0fd2130f00a462/s03_permission/README.md)。以下折叠块保持原文，文中的章号与源码行号沿用该版本。
 
 <details>
 <summary>深入 CC 源码</summary>

@@ -467,8 +467,7 @@ learn_claude_code/
 │   ├── images/
 │   └── README.md
 ├── s03_permission/
-│   ├── code.py
-│   ├── code_middleware.py   # s03.5 中间件版（归档）
+│   ├── code.py              # 权限规则 + LangChain middleware
 │   ├── code_uncommented.py
 │   ├── images/
 │   └── README.md
@@ -500,7 +499,7 @@ learn_claude_code/
 └── requirements.txt
 ```
 
-已实现章节统一为两份文件：`code.py` 是带注释的教学版（`python -m sXX.code` 直接运行），`code_uncommented.py` 是去掉教学注释的速读版。原来的 s03.5、s05.5 已分别归档为 `code_middleware.py` 与 `code_streaming.py`。
+已实现章节统一为两份文件：`code.py` 是带注释的教学版（`python -m sXX.code` 直接运行），`code_uncommented.py` 是去掉教学注释的速读版。原来的 s03.5 middleware 实现已合并进 s03 主代码；s05.5 仍以 `code_streaming.py` 归档。
 
 ## 说明与致谢
 

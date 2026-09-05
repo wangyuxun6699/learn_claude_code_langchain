@@ -27,7 +27,8 @@ TOOL_LESSONS = tuple(
         "s14_mcp_plugin",
     )
 )
-LOOP_LESSONS = TOOL_LESSONS[1:]
+# s01-s03 use LangChain ``create_agent``; s04+ keep the expanded teaching loop.
+LOOP_LESSONS = TOOL_LESSONS[2:]
 INTEGRATED_LESSON = ROOT / "s15_integrated_harness" / "code.py"
 GOAL_LESSON = ROOT / "s17_goal_loop" / "code.py"
 GLOB_LESSONS = (*TOOL_LESSONS, INTEGRATED_LESSON, GOAL_LESSON)

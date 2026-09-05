@@ -52,7 +52,7 @@ def test_uncommented_sources_have_the_same_python_ast() -> None:
         ), chapter.name
 
 
-@pytest.mark.parametrize("chapter", CHAPTERS[2:15], ids=lambda path: path.name)
+@pytest.mark.parametrize("chapter", CHAPTERS[3:15], ids=lambda path: path.name)
 def test_langchain_message_adapter_preserves_tool_protocol(monkeypatch, tmp_path, chapter) -> None:
     langchain_messages = load_lesson(tmp_path, chapter / "code.py")
     calls: dict = {}

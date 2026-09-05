@@ -6,6 +6,7 @@ import types
 from pathlib import Path
 
 import pytest
+from langchain.messages import ToolMessage
 
 ROOT = Path(__file__).resolve().parents[1]
 PERMISSION_LESSONS = tuple(
@@ -125,3 +126,100 @@ def test_permission_command_words_cover_position_case_and_boundaries(
     result = permission_result(lesson, block)
 
     assert bool(result) is expected
+
+
+def middleware_request(name: str, args: dict, call_id: str = "call_1"):
+    return types.SimpleNamespace(
+        tool_call={"name": name, "args": args, "id": call_id, "type": "tool_call"}
+    )
+
+
+def test_s03_registers_permission_middleware_with_five_tools(monkeypatch, tmp_path):
+    lesson = load_lesson(tmp_path, ROOT / "s03_permission" / "code.py")
+    calls = {}
+    fake_model = object()
+    fake_agent = object()
+
+    def fake_chat_openai(**kwargs):
+        calls["model"] = kwargs
+        return fake_model
+
+    def fake_create_agent(**kwargs):
+        calls["agent"] = kwargs
+        return fake_agent
+
+    monkeypatch.setattr(lesson, "ChatOpenAI", fake_chat_openai)
+    monkeypatch.setattr(lesson, "create_agent", fake_create_agent)
+
+    assert lesson.get_agent() is fake_agent
+    assert lesson.get_agent() is fake_agent
+    assert [tool.name for tool in calls["agent"]["tools"]] == [
+        "bash",
+        "read_file",
+        "write_file",
+        "edit_file",
+        "glob",
+    ]
+    assert len(calls["agent"]["middleware"]) == 1
+    assert isinstance(calls["agent"]["middleware"][0], lesson.PermissionMiddleware)
+
+
+def test_permission_middleware_executes_safe_calls(tmp_path):
+    lesson = load_lesson(tmp_path, ROOT / "s03_permission" / "code.py")
+    middleware = lesson.PermissionMiddleware()
+    expected = ToolMessage(content="ok", tool_call_id="call_1", name="read_file")
+    handled = []
+
+    result = middleware.wrap_tool_call(
+        middleware_request("read_file", {"path": "README.md"}),
+        lambda request: handled.append(request) or expected,
+    )
+
+    assert result is expected
+    assert len(handled) == 1
+
+
+def test_permission_middleware_hard_denies_without_asking(monkeypatch, tmp_path):
+    lesson = load_lesson(tmp_path, ROOT / "s03_permission" / "code.py")
+    middleware = lesson.PermissionMiddleware()
+    monkeypatch.setattr(
+        "builtins.input",
+        lambda _prompt: (_ for _ in ()).throw(AssertionError("hard deny must not ask")),
+    )
+
+    result = middleware.wrap_tool_call(
+        middleware_request("bash", {"command": "sudo reboot"}),
+        lambda _request: (_ for _ in ()).throw(AssertionError("denied tool executed")),
+    )
+
+    assert result == ToolMessage(
+        content="Permission denied.",
+        tool_call_id="call_1",
+        name="bash",
+        status="error",
+    )
+
+
+def test_permission_middleware_uses_user_decision_for_rule_matches(monkeypatch, tmp_path):
+    lesson = load_lesson(tmp_path, ROOT / "s03_permission" / "code.py")
+    middleware = lesson.PermissionMiddleware()
+    request = middleware_request("bash", {"command": "rm note.txt"})
+    handled = []
+
+    monkeypatch.setattr("builtins.input", lambda _prompt: "n")
+    denied = middleware.wrap_tool_call(
+        request,
+        lambda current: handled.append(current)
+        or ToolMessage(content="deleted", tool_call_id="call_1"),
+    )
+
+    monkeypatch.setattr("builtins.input", lambda _prompt: "yes")
+    allowed = middleware.wrap_tool_call(
+        request,
+        lambda current: handled.append(current)
+        or ToolMessage(content="deleted", tool_call_id="call_1"),
+    )
+
+    assert denied.status == "error"
+    assert allowed.content == "deleted"
+    assert handled == [request]
