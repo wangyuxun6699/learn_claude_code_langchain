@@ -1,21 +1,3 @@
-"""s04_hooks.py - 用 hook 扩展 Agent 生命周期。
-
-本章完整保留 s03 的五个工具、``create_agent`` 和流式循环，只把权限审核
-从专用 middleware 提升为可注册的 hook 系统：
-
-1. ``UserPromptSubmit``：用户消息进入 Agent 前；
-2. ``PreToolUse``：工具执行前，可返回原因阻止执行；
-3. ``PostToolUse``：工具 handler 返回后；
-4. ``Stop``：一次 Agent 运行结束后，可返回消息要求继续。
-
-LangChain 的 ``HookMiddleware`` 把 PreToolUse / PostToolUse 挂在真正的工具
-handler 两侧，外层 CLI 和 ``agent_loop`` 分别承接 UserPromptSubmit / Stop。
-
-Usage:
-    pip install -r requirements.txt
-    OPENAI_API_KEY=... BASE_URL=... MODEL_ID=... python s04_hooks/code.py
-"""
-
 import glob as glob_module
 import os
 import re
@@ -49,11 +31,9 @@ MODEL = os.environ["MODEL_ID"]
 SYSTEM = f"You are a coding agent at {WORKDIR}. All destructive operations require user approval."
 
 def resolve_path(path: str) -> Path:
-    """把相对路径解析到工作目录；越界访问由权限 hook 审核。"""
     return (WORKDIR / path).resolve()
 
 def print_tool_result(name: str, detail: str, output: str) -> str:
-    """显示已获准的工具调用和结果预览，同时把完整结果返回给 Agent。"""
     print(f"\n\033[33m> {name}({detail})\033[0m")
     print(output[:200])
     return output
@@ -148,11 +128,9 @@ TOOLS = [bash, read_file, write_file, edit_file, glob]
 HOOKS = {"UserPromptSubmit": [], "PreToolUse": [], "PostToolUse": [], "Stop": []}
 
 def register_hook(event: str, callback) -> None:
-    """按注册顺序把 callback 加入指定生命周期事件。"""
     HOOKS[event].append(callback)
 
 def trigger_hooks(event: str, *args):
-    """依次执行 hook；首个非 ``None`` 返回值会短路后续 callback。"""
     for callback in HOOKS[event]:
         result = callback(*args)
         if result is not None:
@@ -161,7 +139,6 @@ def trigger_hooks(event: str, *args):
 
 @dataclass(slots=True)
 class ToolUseBlock:
-    """向课程 hook 暴露稳定、与 provider 无关的工具调用视图。"""
 
     id: str
     name: str
@@ -170,7 +147,6 @@ class ToolUseBlock:
 DENY_LIST = ["rm -rf /", "sudo", "shutdown", "reboot", "mkfs", "dd if=", "> /dev/sda"]
 
 def check_deny_list(command: str) -> str | None:
-    """返回硬拒绝原因；未命中时返回 ``None``。"""
     normalized = command.lower()
     for pattern in DENY_LIST:
         if pattern in normalized:
@@ -182,7 +158,6 @@ DESTRUCTIVE_COMMAND_WORD = re.compile(
 )
 
 def contains_destructive_command(command: str) -> bool:
-    """识别位于命令段开头的 ``rm`` / ``del``，避免误判 model、delimiter。"""
     return bool(DESTRUCTIVE_COMMAND_WORD.search(command))
 
 PERMISSION_RULES = [
@@ -203,14 +178,12 @@ PERMISSION_RULES = [
 ]
 
 def check_rules(tool_name: str, args: dict) -> str | None:
-    """返回第一条命中的审批规则原因；无需审批时返回 ``None``。"""
     for rule in PERMISSION_RULES:
         if tool_name in rule["tools"] and rule["check"](args):
             return rule["message"]
     return None
 
 def ask_user(tool_name: str, args: dict, reason: str) -> str:
-    """显示待审核调用；只有 y/yes 明确允许，其余输入均拒绝。"""
     print(f"\n\033[33m[permission] {reason}\033[0m")
     print(f"   Tool: {tool_name}({args})")
     try:
@@ -222,7 +195,6 @@ def ask_user(tool_name: str, args: dict, reason: str) -> str:
 APPROVAL_LOCK = Lock()
 
 def permission_hook(block: ToolUseBlock) -> str | None:
-    """PreToolUse：依次执行 s03 的 deny、规则匹配和用户审批。"""
     if block.name == "bash":
         reason = check_deny_list(block.input.get("command", ""))
         if reason:
@@ -237,22 +209,18 @@ def permission_hook(block: ToolUseBlock) -> str | None:
     return None
 
 def log_hook(block: ToolUseBlock) -> None:
-    """PreToolUse：记录通过前置权限 hook 的工具调用。"""
     args_preview = str(list(block.input.values())[:2])[:60]
     print(f"\033[90m[HOOK] {block.name}({args_preview})\033[0m")
 
 def large_output_hook(block: ToolUseBlock, output: Any) -> None:
-    """PostToolUse：工具结果过大时发出提醒。"""
     size = len(str(output))
     if size > 100000:
         print(f"\033[33m[HOOK] Large output from {block.name}: {size} chars\033[0m")
 
 def context_inject_hook(query: str) -> None:
-    """UserPromptSubmit：在输入进入 Agent 前记录当前工作目录。"""
     print(f"\033[90m[HOOK] UserPromptSubmit: working in {WORKDIR}\033[0m")
 
 def _tool_result_count(messages: list) -> int:
-    """兼容 LangChain 消息与课程字典格式，统计累计工具结果。"""
     count = 0
     for message in messages:
         if isinstance(message, ToolMessage):
@@ -270,7 +238,6 @@ def _tool_result_count(messages: list) -> int:
     return count
 
 def summary_hook(messages: list) -> None:
-    """Stop：Agent 即将返回 CLI 时打印累计工具调用数。"""
     print(f"\033[90m[HOOK] Stop: session used {_tool_result_count(messages)} tool calls\033[0m")
 
 register_hook("UserPromptSubmit", context_inject_hook)
@@ -280,11 +247,9 @@ register_hook("PostToolUse", large_output_hook)
 register_hook("Stop", summary_hook)
 
 def _tool_output(result: Any) -> Any:
-    """把 LangChain ToolMessage 还原为课程 PostToolUse 期望的工具输出。"""
     return result.content if isinstance(result, ToolMessage) else result
 
 class HookMiddleware(AgentMiddleware):
-    """把课程 PreToolUse / PostToolUse hook 挂在工具 handler 两侧。"""
 
     def wrap_tool_call(self, request: ToolCallRequest, handler):
         tool_call = request.tool_call
@@ -310,7 +275,6 @@ class HookMiddleware(AgentMiddleware):
 agent = None
 
 def get_agent():
-    """创建并复用带生命周期 hook middleware 的五工具 Agent。"""
     global agent
     if agent is None:
         model = ChatOpenAI(
@@ -329,7 +293,6 @@ def get_agent():
     return agent
 
 def agent_loop(messages: list) -> None:
-    """流式运行 Agent，并在每次图运行结束后触发 Stop hook。"""
     while True:
         final_messages = messages
         for chunk in get_agent().stream(
