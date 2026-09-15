@@ -165,7 +165,40 @@ agent = create_agent(
 
 ### LangChain 官方 middleware 模型
 
-LangChain 把 middleware 定义为 Agent 执行图上的扩展点。官方文档把 hook 分成两类：`before_agent`、`before_model` 等 node-style hook 在固定节点前后运行；`wrap_model_call` 与 `wrap_tool_call` 则包住一次具体调用。权限判断需要决定“是否真的执行这次工具”，所以本章选择 `wrap_tool_call`。
+LangChain 把 middleware 定义为 Agent 执行图上的扩展点。要理解它在整条执行链中的位置，可以先区分三个层级：
+
+- **Turn（回合）**：从一条用户消息进入 Agent，到 Agent 产出最终回答。一次 turn 不一定只调用一次模型；只要中间使用了工具，就可能经历多轮“模型 → 工具 → 模型”。
+- **Trace（执行轨迹）**：记录这个 turn 内部实际发生的模型调用、工具调用、耗时、错误和父子关系。启用 LangSmith tracing 后，通常可以把一次 Agent 调用看成一棵以当前 turn 为根的 trace 树。
+- **Middleware（中间件）**：挂在这棵执行树特定位置上的拦截逻辑。它不是一个独立 turn，而是在 turn 执行过程中，对模型或工具的某次调用进行检查、修改、记录或短路。
+
+把三者放在一起，一次需要工具的用户回合可以表示为：
+
+```text
+Thread（同一会话，可包含多个 turn）
+└─ Turn N / 根 Trace
+   ├─ HumanMessage
+   ├─ 模型调用 1
+   │  └─ AIMessage(tool_calls=[...])
+   ├─ PermissionMiddleware.wrap_tool_call()
+   │  ├─ 拒绝：直接返回 ToolMessage，不执行工具
+   │  └─ 允许：调用 handler(request)，进入真实工具
+   ├─ 工具调用及 ToolMessage
+   ├─ 模型调用 2（读取工具结果并继续推理）
+   └─ 最终 AIMessage，当前 turn 结束
+```
+
+官方 hook 可以分为两类：`before_agent`、`before_model` 等 node-style hook 在固定节点前后运行；`wrap_model_call` 与 `wrap_tool_call` 则像函数包装器一样包住一次具体调用。权限判断的核心问题是“是否真的执行这次工具”，所以本章选择 `wrap_tool_call`。
+
+不同 hook 的作用范围也不同：
+
+| Hook | 在一个 turn 中通常执行几次 | 典型用途 |
+|---|---:|---|
+| `before_agent` / `after_agent` | 各一次 | 回合初始化、最终汇总 |
+| `before_model` / `after_model` | 每次模型调用一次 | 调整上下文、检查模型结果 |
+| `wrap_model_call` | 每次模型调用一次 | 重试、切换模型、缓存 |
+| `wrap_tool_call` | 每个工具调用一次 | 权限审核、审计、错误处理 |
+
+因此，如果一个 turn 中调用了两次模型、三个工具，`wrap_tool_call()` 就会执行三次。若某个 `AIMessage` 同时产生多个工具调用，每个调用也会分别经过权限 middleware；本章的 `APPROVAL_LOCK` 会把可能并发出现的审批提示串行化，避免多个提示争用终端输入。
 
 `wrap_tool_call(request, handler)` 中两个参数的职责很清楚：
 
@@ -173,9 +206,17 @@ LangChain 把 middleware 定义为 Agent 执行图上的扩展点。官方文档
 - `handler(request)` 继续执行工具并返回 `ToolMessage` 或 `Command`。middleware 可以在调用前审核，也可以在调用后记录结果；不调用 handler 就能短路本次执行。
 - 多个 middleware 可通过 `create_agent(..., middleware=[...])` 组合。本章只注册一个权限组件，让 s02 的工具声明和流式循环保持不变。
 
-本章使用阻塞式 `input()`，目的是用最少代码看清 allow / deny / ask 的控制点。`APPROVAL_LOCK` 会串行化同一轮中可能并发出现的多个审批提示，避免它们争用终端输入。
+例如用户输入“删除 `test.txt`”时，模型可能先生成 `bash("rm test.txt")`。middleware 随后检查该调用：
 
-官方资料：[Middleware overview](https://docs.langchain.com/oss/python/langchain/middleware/overview) · [Custom middleware](https://docs.langchain.com/oss/python/langchain/middleware/custom)
+1. 若命中硬拒绝，直接构造与原调用 ID 配对的错误 `ToolMessage`；
+2. 若命中询问规则，则等待用户选择 allow 或 deny；
+3. 只有最终允许时才执行 `handler(request)`，让 trace 继续进入真正的 bash 工具节点。
+
+拒绝并不等于立即结束当前 turn。模型仍会收到 `Permission denied.` 这条工具结果，然后在同一 turn 中再次被调用，并据此说明操作没有执行或选择其他方案。这样 trace 中仍保留“模型发起调用 → middleware 作出决策 → 模型读取结果”的完整因果链，只是拒绝路径不会产生真实的工具执行。
+
+本章使用阻塞式 `input()`，目的是用最少代码看清 allow / deny / ask 的控制点。它适合教学和本地 CLI，但暂停时仍占用当前进程；后文介绍的 LangGraph interrupt 配合 checkpointer 后，才能把 turn 的状态持久化并在另一个请求中恢复。
+
+官方资料：[Middleware overview](https://docs.langchain.com/oss/python/langchain/middleware/overview) · [Custom middleware](https://docs.langchain.com/oss/python/langchain/middleware/custom) · [View traces](https://docs.langchain.com/langsmith/view-traces)
 
 ### 确定性规则和模型判断要分开
 
