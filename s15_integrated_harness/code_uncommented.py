@@ -131,7 +131,7 @@ def run_bash(command: str, run_in_background: bool = False) -> str:
     if run_in_background:
         return start_background_task(command)
     try:
-        r = subprocess.run(command, shell=True, cwd=WORKDIR, capture_output=True, text=True, timeout=120)
+        r = subprocess.run(command, shell=True, cwd=WORKDIR, capture_output=True, text=True, errors="replace", timeout=120)
         out = (r.stdout + r.stderr).strip()
         return out[:50000] if out else "(no output)"
     except subprocess.TimeoutExpired:
@@ -306,7 +306,7 @@ def start_background_task(command: str) -> str:
 
     def worker():
         try:
-            r = subprocess.run(command, shell=True, cwd=WORKDIR, capture_output=True, text=True, timeout=300)
+            r = subprocess.run(command, shell=True, cwd=WORKDIR, capture_output=True, text=True, errors="replace", timeout=300)
             out = (r.stdout + r.stderr).strip() or "(no output)"
             status = "completed" if r.returncode == 0 else f"failed (exit {r.returncode})"
         except Exception as e:
