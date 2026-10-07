@@ -438,6 +438,7 @@ def _terminate_process_tree(process: subprocess.Popen[str]) -> None:
                 ],
                 capture_output=True,
                 text=True,
+                errors="replace",
                 timeout=5,
                 check=False,
             )

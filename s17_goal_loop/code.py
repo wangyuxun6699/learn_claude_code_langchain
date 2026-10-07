@@ -155,7 +155,7 @@ def run_bash(command: str) -> str:
 
 def subprocess_run(command: str):
     import subprocess
-    return subprocess.run(command, shell=True, cwd=WORKDIR, capture_output=True, text=True, timeout=120)
+    return subprocess.run(command, shell=True, cwd=WORKDIR, capture_output=True, text=True, errors="replace", timeout=120)
 
 
 @tool
